@@ -4,7 +4,7 @@ import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import Game from "@/pages/Game";
+import Game, { ErrorBoundary } from "@/pages/Game";
 
 function AppRouter() {
   return (
@@ -20,9 +20,11 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
-        <Router hook={useHashLocation}>
-          <AppRouter />
-        </Router>
+        <ErrorBoundary>
+          <Router hook={useHashLocation}>
+            <AppRouter />
+          </Router>
+        </ErrorBoundary>
       </TooltipProvider>
     </QueryClientProvider>
   );

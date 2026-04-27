@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, Component } from "react";
+import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -521,7 +522,10 @@ export default function Game() {
       user={user}
       sdkReady={sdkReady}
       playerError={playerError}
-      onStart={() => setView("source-select")}
+      onStart={() => {
+        console.log("Choose Songs clicked, user:", user, "tokens:", tokens);
+        setView("source-select");
+      }}
       onLogout={logout}
     />
   );
@@ -1080,3 +1084,26 @@ function GameOverScreen({
 }
 
 
+
+// ─── Error Boundary ───────────────────────────────────────────────────────────
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  state = { error: null };
+  static getDerivedStateFromError(e: Error) { return { error: e.message + "\n" + e.stack }; }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="min-h-screen bg-background flex items-center justify-center p-6">
+          <div className="max-w-lg w-full bg-card border border-destructive/30 rounded-xl p-6 space-y-3">
+            <p className="font-bold text-destructive">Something crashed — please copy this and share it:</p>
+            <pre className="text-xs text-muted-foreground whitespace-pre-wrap break-all bg-muted p-3 rounded overflow-auto max-h-64">
+              {this.state.error}
+            </pre>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export { ErrorBoundary };
