@@ -780,7 +780,7 @@ function SourceSelectScreen({
               </div>
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-foreground truncate">{pl.name}</p>
-                <p className="text-xs text-muted-foreground">{pl.tracks.total} tracks</p>
+                <p className="text-xs text-muted-foreground">{pl.tracks?.total ?? "?"} tracks</p>
               </div>
               {selectedSource === pl.id && <CheckCircle className="w-5 h-5 text-primary shrink-0" />}
             </button>

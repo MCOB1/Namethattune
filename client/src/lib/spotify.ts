@@ -145,7 +145,7 @@ export async function getCurrentUser(token: string): Promise<SpotifyUser> {
 
 export async function getUserPlaylists(token: string, limit = 50): Promise<SpotifyPlaylist[]> {
   const data = await spotifyFetch(`/me/playlists?limit=${limit}`, token);
-  return data.items.filter((p: any) => p && p.id);
+  return data.items.filter((p: any) => p && p.id && p.tracks);
 }
 
 export async function getPlaylistTracks(playlistId: string, token: string): Promise<SpotifyTrack[]> {
