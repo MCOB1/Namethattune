@@ -190,6 +190,17 @@ export const GENRE_CATEGORIES: SpotifyCategory[] = [
   { id: "christmas holiday",name: "Holiday",         icons: [] },
 ];
 
+// Live playlist search — works exactly like typing into the Spotify app search bar
+export async function searchPlaylists(query: string, token: string): Promise<SpotifyPlaylist[]> {
+  if (!query.trim()) return [];
+  const q = encodeURIComponent(query.trim());
+  const data = await spotifyFetch(`/search?q=${q}&type=playlist&limit=30&market=US`, token);
+  const items: any[] = data.playlists?.items || [];
+  return items
+    .filter((p: any) => p != null && p.id)
+    .map((p: any) => ({ ...p, tracks: p.tracks ?? { total: 0 } }));
+}
+
 export async function getCategories(token: string): Promise<SpotifyCategory[]> {
   // Return hardcoded list — Spotify deprecated /browse/categories in 2023
   return GENRE_CATEGORIES;

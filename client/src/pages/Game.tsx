@@ -16,6 +16,7 @@ import {
   getCategories,
   getCategoryPlaylists,
   getFeaturedPlaylists,
+  searchPlaylists,
   shuffleArray,
   SPOTIFY_CLIENT_ID,
   type SpotifyTokens,
@@ -48,6 +49,8 @@ import {
   Clock,
   Lightbulb,
   Flag,
+  Search,
+  X,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -223,6 +226,11 @@ export default function Game() {
   const [featuredPlaylists, setFeaturedPlaylists] = useState<SpotifyPlaylist[]>([]);
   const [loadingPlaylists, setLoadingPlaylists] = useState(false);
   const [selectedSource, setSelectedSource] = useState<"liked" | string>("liked");
+  // Spotify search
+  const [spotifySearchQuery, setSpotifySearchQuery] = useState("");
+  const [spotifySearchResults, setSpotifySearchResults] = useState<SpotifyPlaylist[]>([]);
+  const [searchingSpotify, setSearchingSpotify] = useState(false);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Guess mode
   const [guessMode, setGuessMode] = useState<GuessMode>("either");
@@ -366,8 +374,28 @@ export default function Game() {
   useEffect(() => {
     if (!tokens || view !== "source-select") return;
     if (sourceTab === "mine") loadMyPlaylists();
-    else loadCategories();
+    // Spotify tab: categories load is no longer needed — we use live search
   }, [tokens, view, sourceTab]);
+
+  // ─── Spotify playlist search (debounced) ─────────────────────────────
+  const handleSpotifySearch = useCallback((q: string) => {
+    setSpotifySearchQuery(q);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    if (!q.trim()) { setSpotifySearchResults([]); return; }
+    searchDebounceRef.current = setTimeout(async () => {
+      const token = await getValidToken();
+      if (!token) return;
+      setSearchingSpotify(true);
+      try {
+        const results = await searchPlaylists(q, token);
+        setSpotifySearchResults(results);
+      } catch (e) {
+        console.error("Spotify search error:", e);
+        setSpotifySearchResults([]);
+      }
+      setSearchingSpotify(false);
+    }, 500);
+  }, [getValidToken]);
 
   // ─── Reset round state ───────────────────────────────────────────
   const resetRound = useCallback(() => {
@@ -609,13 +637,8 @@ export default function Game() {
       <SourceSelectScreen
         user={user}
         sourceTab={sourceTab}
-        onTabChange={(tab) => { setSourceTab(tab); setSelectedCategory(null); }}
+        onTabChange={(tab) => { setSourceTab(tab); setSelectedCategory(null); setSpotifySearchQuery(""); setSpotifySearchResults([]); }}
         myPlaylists={myPlaylists}
-        categories={categories}
-        selectedCategory={selectedCategory}
-        categoryPlaylists={categoryPlaylists}
-        featuredPlaylists={featuredPlaylists}
-        onSelectCategory={loadCategoryPlaylists}
         loading={loadingPlaylists}
         selectedSource={selectedSource}
         onSelect={setSelectedSource}
@@ -625,7 +648,10 @@ export default function Game() {
         onBack={() => setView("setup")}
         loadingTracks={loadingTracks}
         onLogout={logout}
-        onClearCategory={() => setSelectedCategory(null)}
+        spotifySearchQuery={spotifySearchQuery}
+        spotifySearchResults={spotifySearchResults}
+        searchingSpotify={searchingSpotify}
+        onSpotifySearch={handleSpotifySearch}
       />
     );
   }
@@ -804,19 +830,18 @@ function PlaylistButton({ playlist, selected, onSelect }: { playlist: SpotifyPla
 }
 
 function SourceSelectScreen({
-  user, sourceTab, onTabChange, myPlaylists, categories, selectedCategory,
-  categoryPlaylists, featuredPlaylists, onSelectCategory, loading, selectedSource,
-  onSelect, guessMode, onGuessModeChange, onStart, onBack, loadingTracks, onLogout, onClearCategory,
+  user, sourceTab, onTabChange, myPlaylists, loading, selectedSource,
+  onSelect, guessMode, onGuessModeChange, onStart, onBack, loadingTracks, onLogout,
+  spotifySearchQuery, spotifySearchResults, searchingSpotify, onSpotifySearch,
 }: {
   user: SpotifyUser; sourceTab: "mine" | "spotify";
   onTabChange: (t: "mine" | "spotify") => void;
-  myPlaylists: SpotifyPlaylist[]; categories: SpotifyCategory[];
-  selectedCategory: SpotifyCategory | null; categoryPlaylists: SpotifyPlaylist[];
-  featuredPlaylists: SpotifyPlaylist[]; onSelectCategory: (c: SpotifyCategory) => void;
+  myPlaylists: SpotifyPlaylist[];
   loading: boolean; selectedSource: string; onSelect: (s: string) => void;
   guessMode: GuessMode; onGuessModeChange: (m: GuessMode) => void;
   onStart: () => void; onBack: () => void; loadingTracks: boolean; onLogout: () => void;
-  onClearCategory: () => void;
+  spotifySearchQuery: string; spotifySearchResults: SpotifyPlaylist[];
+  searchingSpotify: boolean; onSpotifySearch: (q: string) => void;
 }) {
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -854,99 +879,125 @@ function SourceSelectScreen({
         {/* Column 2 — Music source */}
         <div className="flex flex-col p-5 overflow-y-auto">
           <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Music source</p>
+
           {/* Tabs */}
-          <div className="flex gap-2 mb-3">
-            {([["mine", "My Music"], ["spotify", "Spotify Playlists"]] as const).map(([tab, label]) => (
+          <div className="flex gap-2 mb-4">
+            {([["mine", "My Music"], ["spotify", "Spotify Search"]] as const).map(([tab, label]) => (
               <button
                 key={tab}
                 onClick={() => onTabChange(tab)}
-                className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all ${sourceTab === tab ? "bg-primary text-primary-foreground" : "bg-card border border-border text-muted-foreground hover:border-primary/50"}`}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${
+                  sourceTab === tab
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-card border border-border text-muted-foreground hover:border-primary/50"
+                }`}
               >
                 {label}
               </button>
             ))}
           </div>
 
-          {/* Playlist list */}
-          <div className="flex-1 space-y-2 min-h-0">
-            {loading ? (
-              <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
-            ) : sourceTab === "mine" ? (
-              <>
-                <button
-                  onClick={() => onSelect("liked")}
-                  className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${selectedSource === "liked" ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/50"}`}
-                >
-                  <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center shrink-0">
-                    <Heart className="w-5 h-5 text-white" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-sm text-foreground">Liked Songs</p>
-                    <p className="text-sm text-muted-foreground">Your saved tracks</p>
-                  </div>
-                  {selectedSource === "liked" && <CheckCircle className="w-4 h-4 text-primary ml-auto" />}
-                </button>
-                {myPlaylists.map(pl => <PlaylistButton key={pl.id} playlist={pl} selected={selectedSource === pl.id} onSelect={() => onSelect(pl.id)} />)}
-              </>
+          {/* Content */}
+          <div className="flex-1 space-y-2 min-h-0 overflow-y-auto">
+            {sourceTab === "mine" ? (
+              /* ── My Music ─────────────────────────────── */
+              loading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+                </div>
+              ) : (
+                <>
+                  {/* Liked Songs */}
+                  <button
+                    onClick={() => onSelect("liked")}
+                    className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${
+                      selectedSource === "liked" ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/50"
+                    }`}
+                  >
+                    <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center shrink-0">
+                      <Heart className="w-5 h-5 text-white" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm text-foreground">Liked Songs</p>
+                      <p className="text-sm text-muted-foreground">Your saved tracks</p>
+                    </div>
+                    {selectedSource === "liked" && <CheckCircle className="w-4 h-4 text-primary ml-auto" />}
+                  </button>
+                  {myPlaylists.map(pl => (
+                    <PlaylistButton key={pl.id} playlist={pl} selected={selectedSource === pl.id} onSelect={() => onSelect(pl.id)} />
+                  ))}
+                </>
+              )
             ) : (
+              /* ── Spotify Search ────────────────────────── */
               <>
-                {selectedCategory ? (
-                  <>
-                    <button onClick={onClearCategory} className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground py-1 mb-1">
-                      ← Back to genres
+                {/* Search box */}
+                <div className="relative mb-2">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+                  <input
+                    type="text"
+                    value={spotifySearchQuery}
+                    onChange={e => onSpotifySearch(e.target.value)}
+                    placeholder="Search playlists on Spotify…"
+                    className="w-full h-11 pl-9 pr-9 rounded-xl border-2 border-primary/40 bg-card text-foreground placeholder:text-muted-foreground text-sm focus:outline-none focus:border-primary transition-colors"
+                    autoFocus
+                  />
+                  {spotifySearchQuery && (
+                    <button
+                      onClick={() => onSpotifySearch("")}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="w-4 h-4" />
                     </button>
-                    <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-2">{selectedCategory.name}</p>
-                    {categoryPlaylists.length === 0 && !loading && (
-                      <p className="text-sm text-muted-foreground text-center py-4">No playlists found for this genre.</p>
-                    )}
-                    {categoryPlaylists.map(pl => <PlaylistButton key={pl.id} playlist={pl} selected={selectedSource === pl.id} onSelect={() => onSelect(pl.id)} />)}
-                  </>
-                ) : (
-                  <>
-                    {featuredPlaylists.length > 0 && (
-                      <div className="space-y-2 mb-3">
-                        <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Featured</p>
-                        {featuredPlaylists.map(pl => <PlaylistButton key={pl.id} playlist={pl} selected={selectedSource === pl.id} onSelect={() => onSelect(pl.id)} />)}
-                      </div>
-                    )}
-                    {categories.length > 0 ? (
-                      <>
-                        <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-2">Browse by genre</p>
-                        <div className="grid grid-cols-2 gap-2">
-                          {categories.map(cat => (
-                            <button
-                              key={cat.id}
-                              onClick={() => onSelectCategory(cat)}
-                              className="relative h-16 rounded-xl overflow-hidden border border-border bg-card hover:border-primary/50 transition-all text-left"
-                            >
-                              {cat.icons?.[0]?.url && (
-                                <img src={cat.icons[0].url} alt={cat.name} className="absolute inset-0 w-full h-full object-cover opacity-40" />
-                              )}
-                              <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent p-2 flex items-end">
-                                <span className="font-semibold text-sm text-white drop-shadow">{cat.name}</span>
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-                      </>
-                    ) : (
-                      <div className="text-center py-8 space-y-2">
-                        <p className="text-sm text-muted-foreground">Couldn't load genres right now.</p>
-                        <p className="text-xs text-muted-foreground/60">Try switching to "My Music" or check your Spotify connection.</p>
-                      </div>
-                    )}
-                  </>
+                  )}
+                </div>
+
+                {/* States */}
+                {searchingSpotify && (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+                    <span className="ml-2 text-sm text-muted-foreground">Searching…</span>
+                  </div>
                 )}
+
+                {!searchingSpotify && !spotifySearchQuery && (
+                  <div className="text-center py-10 space-y-2">
+                    <Search className="w-8 h-8 text-muted-foreground/40 mx-auto" />
+                    <p className="text-sm text-muted-foreground">Type anything — genre, decade, mood, artist name…</p>
+                    <p className="text-xs text-muted-foreground/60">e.g. "70s rock", "chill vibes", "Taylor Swift"</p>
+                  </div>
+                )}
+
+                {!searchingSpotify && spotifySearchQuery && spotifySearchResults.length === 0 && (
+                  <p className="text-sm text-muted-foreground text-center py-8">No playlists found for "{spotifySearchQuery}"</p>
+                )}
+
+                {!searchingSpotify && spotifySearchResults.map(pl => (
+                  <PlaylistButton key={pl.id} playlist={pl} selected={selectedSource === pl.id} onSelect={() => onSelect(pl.id)} />
+                ))}
               </>
             )}
           </div>
         </div>
 
-        {/* Column 3 — Start game summary */}
+        {/* Column 3 — Rules + Start */}
         <div className="flex flex-col p-5">
-          <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Ready to play?</p>
+          {/* Start button at the TOP */}
+          <Button
+            data-testid="button-start-game"
+            className="w-full h-12 text-base font-semibold mb-5"
+            onClick={onStart}
+            disabled={loadingTracks}
+          >
+            {loadingTracks
+              ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Loading tracks…</>
+              : <><Play className="w-4 h-4 mr-2" />Start Game</>}
+          </Button>
 
-          <div className="space-y-3 flex-1">
+          <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Rules</p>
+
+          <div className="space-y-3 overflow-y-auto">
+            {/* Current settings summary */}
             <div className="bg-card border border-border rounded-xl p-4 space-y-2 text-sm">
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">Mode</span>
@@ -957,7 +1008,7 @@ function SourceSelectScreen({
                 <span className="font-medium text-foreground">{ROUNDS_PER_GAME}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Chances/song</span>
+                <span className="text-muted-foreground">Chances / song</span>
                 <span className="font-medium text-foreground">{MAX_GUESSES}</span>
               </div>
               <div className="flex items-center justify-between">
@@ -966,32 +1017,28 @@ function SourceSelectScreen({
               </div>
             </div>
 
+            {/* Scoring */}
             <div className="bg-card border border-border rounded-xl p-4 text-sm space-y-1">
               <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-2">Scoring</p>
               {GUESS_POINTS.slice(0, MAX_GUESSES).map((pts, i) => (
                 <div key={i} className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Guess {i + 1} ({(INITIAL_CLIP_MS + i * EXTRA_CLIP_MS) / 1000}s clip)</span>
+                  <span className="text-muted-foreground">Guess {i + 1} &nbsp;({(INITIAL_CLIP_MS + i * EXTRA_CLIP_MS) / 1000}s clip)</span>
                   <span className="font-semibold text-primary">{pts} pts</span>
                 </div>
               ))}
             </div>
 
-            <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 text-sm text-muted-foreground space-y-1">
-              <p className="font-medium text-foreground text-sm mb-1">Tips</p>
-              <p className="text-sm">• You get {MAX_GUESSES} guesses per song</p>
-              <p className="text-sm">• Each wrong guess plays 5 more seconds</p>
-              <p className="text-sm">• Use hints for first-letter clues</p>
-              <p className="text-sm">• Close spellings count — no need to be exact</p>
-              {guessMode === "both" && <p className="text-sm">• "Both" mode gives partial credit for one correct</p>}
+            {/* Tips */}
+            <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 text-sm space-y-1">
+              <p className="font-medium text-foreground text-sm mb-2">Tips</p>
+              <p className="text-sm">• {MAX_GUESSES} guesses per song — each wrong one plays 5 more seconds</p>
+              <p className="text-sm">• Hit Hint after a wrong guess for clues</p>
+              <p className="text-sm">• Close spellings count, no need to be exact</p>
+              {guessMode === "both" && <p className="text-sm">• "Both" mode gives partial credit for getting one right</p>}
             </div>
           </div>
-
-          <div className="mt-4">
-            <Button data-testid="button-start-game" className="w-full h-12 text-base font-semibold" onClick={onStart} disabled={loadingTracks}>
-              {loadingTracks ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Loading tracks…</> : `Start Game`}
-            </Button>
-          </div>
         </div>
+
       </div>
     </div>
   );
