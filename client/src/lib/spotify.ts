@@ -166,6 +166,21 @@ export async function getPlaylistTracks(playlistId: string, token: string): Prom
   return tracks;
 }
 
+export async function getCategories(token: string): Promise<SpotifyCategory[]> {
+  const data = await spotifyFetch("/browse/categories?limit=50&country=US", token);
+  return data.categories.items;
+}
+
+export async function getCategoryPlaylists(categoryId: string, token: string): Promise<SpotifyPlaylist[]> {
+  const data = await spotifyFetch(`/browse/categories/${categoryId}/playlists?limit=20&country=US`, token);
+  return (data.playlists?.items || []).filter((p: any) => p && p.id && p.tracks);
+}
+
+export async function getFeaturedPlaylists(token: string): Promise<SpotifyPlaylist[]> {
+  const data = await spotifyFetch("/browse/featured-playlists?limit=20&country=US", token);
+  return (data.playlists?.items || []).filter((p: any) => p && p.id && p.tracks);
+}
+
 export async function getLikedTracks(token: string): Promise<SpotifyTrack[]> {
   const tracks: SpotifyTrack[] = [];
   let url = "/me/tracks?limit=50";
@@ -199,6 +214,12 @@ export interface SpotifyUser {
   display_name: string;
   email: string;
   images: { url: string }[];
+}
+
+export interface SpotifyCategory {
+  id: string;
+  name: string;
+  icons: { url: string }[];
 }
 
 export interface SpotifyPlaylist {
