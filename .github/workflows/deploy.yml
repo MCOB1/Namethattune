@@ -29,8 +29,8 @@ jobs:
         env:
           GITHUB_PAGES: true
           VITE_SPOTIFY_CLIENT_ID: ${{ secrets.VITE_SPOTIFY_CLIENT_ID }}
-          VITE_SPOTIFY_REDIRECT_URI: https://mcob1.github.io/namethattune/
-        run: npm run build
+          VITE_SPOTIFY_REDIRECT_URI: https://mcob1.github.io/Namethattune/
+        run: npm run build && touch dist/public/.nojekyll
 
       - uses: actions/configure-pages@v4
 
