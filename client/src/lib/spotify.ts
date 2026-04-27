@@ -195,18 +195,56 @@ export async function getCategories(token: string): Promise<SpotifyCategory[]> {
   return GENRE_CATEGORIES;
 }
 
-// Search Spotify for playlists matching a genre query
-export async function getCategoryPlaylists(genreQuery: string, token: string): Promise<SpotifyPlaylist[]> {
-  const q = encodeURIComponent(genreQuery);
-  const data = await spotifyFetch(`/search?q=${q}&type=playlist&limit=20&market=US`, token);
-  const items = data.playlists?.items || [];
-  return items.filter((p: any) => p && p.id && p.tracks);
+// Map genre IDs to Spotify-optimised search queries that surface the best playlists
+const GENRE_SEARCH_QUERIES: Record<string, string> = {
+  "70s rock":          "70s rock classics",
+  "80s hits":          "80s greatest hits",
+  "90s alternative":   "90s alternative rock",
+  "2000s pop":         "2000s pop hits",
+  "hip hop":           "hip hop essentials",
+  "pop hits":          "today's top hits",
+  "classic rock":      "classic rock anthems",
+  "country":           "country hits",
+  "r&b soul":          "r&b soul classics",
+  "jazz":              "jazz classics",
+  "latin":             "latin hits",
+  "indie":             "indie essentials",
+  "metal":             "metal essentials",
+  "electronic dance":  "dance hits electronic",
+  "blues":             "blues classics",
+  "reggae":            "reggae classics",
+  "punk rock":         "punk rock essentials",
+  "broadway musicals": "broadway musical hits",
+  "workout hits":      "workout hits gym",
+  "christmas holiday": "christmas holiday hits",
+};
+
+// Search Spotify for playlists — uses curated queries for best results
+export async function getCategoryPlaylists(genreId: string, token: string): Promise<SpotifyPlaylist[]> {
+  const query = GENRE_SEARCH_QUERIES[genreId] || genreId;
+  // Search both with and without "playlist" keyword for maximum results
+  const q = encodeURIComponent(query);
+  const data = await spotifyFetch(
+    `/search?q=${q}&type=playlist&limit=20&market=US`,
+    token
+  );
+  const items: any[] = data.playlists?.items || [];
+  // Accept playlists even if tracks.total is 0 — just needs a valid id
+  return items
+    .filter((p: any) => p != null && p.id)
+    .map((p: any) => ({
+      ...p,
+      tracks: p.tracks ?? { total: 0 },
+    }));
 }
 
 export async function getFeaturedPlaylists(token: string): Promise<SpotifyPlaylist[]> {
-  // Featured playlists endpoint also deprecated — search for "top hits" as a fallback
-  const data = await spotifyFetch("/search?q=top+hits+playlist&type=playlist&limit=10&market=US", token);
-  return (data.playlists?.items || []).filter((p: any) => p && p.id && p.tracks);
+  // Search for curated top-hits playlists as a featured replacement
+  const data = await spotifyFetch("/search?q=top+hits+2024&type=playlist&limit=10&market=US", token);
+  const items: any[] = data.playlists?.items || [];
+  return items
+    .filter((p: any) => p != null && p.id)
+    .map((p: any) => ({ ...p, tracks: p.tracks ?? { total: 0 } }));
 }
 
 export async function getLikedTracks(token: string): Promise<SpotifyTrack[]> {

@@ -350,9 +350,14 @@ export default function Game() {
     setCategoryPlaylists([]);
     setLoadingPlaylists(true);
     try {
-      const pls = await getCategoryPlaylists(cat.id, token);
+      let pls = await getCategoryPlaylists(cat.id, token);
+      // Fallback: if nothing came back, search by name directly
+      if (!pls || pls.length === 0) {
+        pls = await getCategoryPlaylists(cat.name, token);
+      }
       setCategoryPlaylists(pls || []);
-    } catch {
+    } catch (e) {
+      console.error("loadCategoryPlaylists error:", e);
       setCategoryPlaylists([]);
     }
     setLoadingPlaylists(false);
@@ -1197,7 +1202,7 @@ function PlayingScreen({
                     value={guess}
                     onChange={e => onGuessChange(e.target.value)}
                     onKeyDown={e => e.key === "Enter" && guess.trim() && onSubmit()}
-                    className="flex-1 h-12 text-base"
+                    className="flex-1 h-12 text-base border-2 border-yellow-400 focus:border-yellow-300 focus:ring-yellow-400/30 placeholder:text-muted-foreground/60"
                     autoFocus
                   />
                   <Button
