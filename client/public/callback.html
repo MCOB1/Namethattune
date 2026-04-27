@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head><title>Connecting...</title></head>
+<body>
+<script>
+  // This page receives the Spotify redirect, grabs the code+state,
+  // and passes them to the opener (the game window) via postMessage.
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  const state = params.get('state');
+  const error = params.get('error');
+
+  if (window.opener) {
+    window.opener.postMessage(
+      { type: 'SPOTIFY_AUTH_CALLBACK', code, state, error },
+      '*'
+    );
+    window.close();
+  } else {
+    // Fallback: not in a popup — redirect the whole page
+    window.location.href = '/?code=' + code + '&state=' + state;
+  }
+</script>
+<p style="font-family:sans-serif;text-align:center;margin-top:40px;color:#888">
+  Connecting to Spotify...
+</p>
+</body>
+</html>

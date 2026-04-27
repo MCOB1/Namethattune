@@ -1,0 +1,151 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Music-themed dark palette ── */
+/* Deep dark surfaces, Spotify-green accent, warm neutrals */
+
+@layer base {
+  :root {
+    /* Light mode (rarely used — game is dark-first) */
+    --background: 240 10% 96%;
+    --foreground: 240 10% 10%;
+    --card: 240 8% 98%;
+    --card-foreground: 240 10% 10%;
+    --popover: 240 8% 98%;
+    --popover-foreground: 240 10% 10%;
+    --primary: 142 69% 40%;        /* Spotify green */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 5% 92%;
+    --secondary-foreground: 240 10% 20%;
+    --muted: 240 5% 90%;
+    --muted-foreground: 240 5% 45%;
+    --accent: 240 5% 90%;
+    --accent-foreground: 240 10% 20%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 6% 88%;
+    --input: 240 6% 88%;
+    --ring: 142 69% 40%;
+    --radius: 0.625rem;
+
+    /* Chart colors */
+    --chart-1: 142 69% 40%;
+    --chart-2: 262 80% 65%;
+    --chart-3: 200 75% 55%;
+    --chart-4: 35 90% 55%;
+    --chart-5: 0 72% 60%;
+  }
+
+  .dark,
+  [data-theme="dark"] {
+    /* Deep music studio dark */
+    --background: 240 10% 5%;       /* #0C0C0F */
+    --foreground: 240 5% 90%;
+    --card: 240 8% 9%;              /* #141417 */
+    --card-foreground: 240 5% 90%;
+    --popover: 240 8% 9%;
+    --popover-foreground: 240 5% 90%;
+    --primary: 142 69% 45%;         /* Spotify green, slightly lighter for dark */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 6% 15%;
+    --secondary-foreground: 240 5% 80%;
+    --muted: 240 6% 14%;
+    --muted-foreground: 240 5% 55%;
+    --accent: 240 6% 14%;
+    --accent-foreground: 240 5% 80%;
+    --destructive: 0 63% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 6% 16%;
+    --input: 240 6% 16%;
+    --ring: 142 69% 45%;
+
+    /* Chart colors */
+    --chart-1: 142 69% 45%;
+    --chart-2: 262 80% 70%;
+    --chart-3: 200 75% 60%;
+    --chart-4: 35 90% 60%;
+    --chart-5: 0 72% 65%;
+  }
+}
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    min-height: 100dvh;
+    line-height: 1.6;
+  }
+
+  img, picture, video, canvas, svg {
+    display: block;
+    max-width: 100%;
+  }
+
+  input, button, textarea, select {
+    font: inherit;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    line-height: 1.2;
+  }
+
+  button {
+    cursor: pointer;
+  }
+}
+
+/* Animate in utility */
+@layer utilities {
+  .animate-in {
+    animation-name: animate-in;
+    animation-duration: 300ms;
+    animation-fill-mode: both;
+  }
+
+  .fade-in {
+    --tw-enter-opacity: 1;
+  }
+
+  .slide-in-from-bottom-2 {
+    --tw-enter-translate-y: 0.5rem;
+  }
+
+  @keyframes animate-in {
+    from {
+      opacity: 0;
+      transform: translateY(var(--tw-enter-translate-y, 0));
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/* Scrollbar styling for dark mode */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 999px;
+}
