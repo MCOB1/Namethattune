@@ -39,26 +39,26 @@
 
   .dark,
   [data-theme="dark"] {
-    /* Deep music studio dark */
-    --background: 240 10% 5%;       /* #0C0C0F */
-    --foreground: 240 5% 90%;
-    --card: 240 8% 9%;              /* #141417 */
-    --card-foreground: 240 5% 90%;
-    --popover: 240 8% 9%;
-    --popover-foreground: 240 5% 90%;
-    --primary: 142 69% 45%;         /* Spotify green, slightly lighter for dark */
+    /* Deep music studio dark — high contrast */
+    --background: 0 0% 4%;          /* near-black #0A0A0A */
+    --foreground: 0 0% 96%;         /* near-white #F5F5F5 */
+    --card: 240 6% 10%;             /* dark card #181820 */
+    --card-foreground: 0 0% 96%;
+    --popover: 240 6% 10%;
+    --popover-foreground: 0 0% 96%;
+    --primary: 142 69% 48%;         /* Spotify green */
     --primary-foreground: 0 0% 100%;
-    --secondary: 240 6% 15%;
-    --secondary-foreground: 240 5% 80%;
-    --muted: 240 6% 14%;
-    --muted-foreground: 240 5% 55%;
-    --accent: 240 6% 14%;
-    --accent-foreground: 240 5% 80%;
-    --destructive: 0 63% 55%;
+    --secondary: 240 5% 18%;
+    --secondary-foreground: 0 0% 90%;
+    --muted: 240 5% 16%;
+    --muted-foreground: 0 0% 72%;   /* was 55% — boosted to 72% for readability */
+    --accent: 240 5% 16%;
+    --accent-foreground: 0 0% 90%;
+    --destructive: 0 63% 58%;
     --destructive-foreground: 0 0% 100%;
-    --border: 240 6% 16%;
-    --input: 240 6% 16%;
-    --ring: 142 69% 45%;
+    --border: 240 5% 22%;           /* slightly brighter borders */
+    --input: 240 5% 18%;
+    --ring: 142 69% 48%;
 
     /* Chart colors */
     --chart-1: 142 69% 45%;
@@ -88,6 +88,7 @@
   body {
     @apply bg-background text-foreground;
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 17px;    /* bumped up for readability */
     min-height: 100dvh;
     line-height: 1.6;
   }

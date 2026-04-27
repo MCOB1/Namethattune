@@ -152,9 +152,9 @@ function getAlbumArt(track: SpotifyTrack): string {
   return track.album.images?.[0]?.url || "";
 }
 
-// Generate a hint: first letters of each word, rest hidden
-// e.g. "Hotel California" → "H_____ C_________"
-function generateHint(text: string, revealCount: number): string {
+// Generate a letter-reveal hint: first N letters shown, rest as underscores
+// e.g. "Hotel California" with revealCount=1 → "H____ C_________"
+function generateLetterHint(text: string, revealCount: number): string {
   return text
     .split(" ")
     .map((word) => {
@@ -163,6 +163,45 @@ function generateHint(text: string, revealCount: number): string {
       return word.slice(0, reveal) + "_".repeat(word.length - reveal);
     })
     .join(" ");
+}
+
+// Generate context hints from track metadata (no external API needed)
+function getContextHints(track: SpotifyTrack): string[] {
+  const hints: string[] = [];
+  const artistName = track.artists[0]?.name || "";
+  const songName = track.name;
+  const albumName = track.album.name;
+  const durationSec = Math.round(track.duration_ms / 1000);
+  const durationMin = Math.floor(durationSec / 60);
+  const durationRemSec = durationSec % 60;
+
+  // Word/character counts
+  const songWords = songName.trim().split(/\s+/).length;
+  const artistWords = artistName.trim().split(/\s+/).length;
+
+  // First letter clues
+  const songFirst = songName[0]?.toUpperCase();
+  const artistFirst = artistName[0]?.toUpperCase();
+
+  // Build hints in order of usefulness
+  hints.push(`The song title starts with the letter "${songFirst}" and has ${songWords} word${songWords !== 1 ? "s" : ""}`);
+  hints.push(`The artist's name starts with "${artistFirst}" and has ${artistWords === 1 ? "one word" : `${artistWords} words`}`);
+  hints.push(`The full song is about ${durationMin}m ${durationRemSec}s long`);
+  hints.push(`This track is from the album: "${albumName}"`);
+
+  // Syllable feel hint for the song
+  const vowels = songName.toLowerCase().replace(/[^aeiouy]/g, "").length;
+  if (vowels <= 3) hints.push(`The song title is short — only ${vowels} syllable${vowels !== 1 ? "s" : ""} worth of vowels`);
+  else hints.push(`The song title has ${vowels} vowels in it`);
+
+  // Artist collaboration hint
+  if (track.artists.length > 1) {
+    hints.push(`This is a collaboration — ${track.artists.length} artists are credited on this track`);
+  } else {
+    hints.push(`This song is performed by a solo artist (just one name in the credits)`);
+  }
+
+  return hints;
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -205,8 +244,9 @@ export default function Game() {
   const [clipDurationMs, setClipDurationMs] = useState(INITIAL_CLIP_MS);
   const [clipTimer, setClipTimer] = useState(INITIAL_CLIP_MS / 1000);
   const [wrongGuesses, setWrongGuesses] = useState<string[]>([]);
-  const [hint, setHint] = useState<string | null>(null);
-  const [hintReveal, setHintReveal] = useState(1); // how many letters revealed
+  const [hints, setHints] = useState<string[]>([]); // list of revealed hints so far
+  const [hintIndex, setHintIndex] = useState(0);    // which hint slot we're on next
+  const [letterReveal, setLetterReveal] = useState(1); // how many letters shown in letter hint
   const [pointsEarned, setPointsEarned] = useState(0);
 
   const playerRef = useRef<any>(null);
@@ -334,8 +374,9 @@ export default function Game() {
     setClipDurationMs(INITIAL_CLIP_MS);
     setClipTimer(INITIAL_CLIP_MS / 1000);
     setWrongGuesses([]);
-    setHint(null);
-    setHintReveal(1);
+    setHints([]);
+    setHintIndex(0);
+    setLetterReveal(1);
     setPointsEarned(0);
   }, []);
 
@@ -429,21 +470,36 @@ export default function Game() {
   }, [clipDurationMs, clearTimers, pausePlayback, playClip]);
 
   // ─── Hint ────────────────────────────────────────────────────────
+  // Hints rotate through: context facts first, then letter reveals
   const showHint = useCallback(() => {
     if (!game) return;
     const track = game.tracks[game.currentIndex];
-    const reveal = hintReveal;
-    let hintText = "";
-    if (guessMode === "song" || guessMode === "either" || guessMode === "both") {
-      hintText += `Song: ${generateHint(track.name, reveal)}`;
+    const contextHints = getContextHints(track);
+    const totalContextHints = contextHints.length;
+
+    let newHintText = "";
+
+    if (hintIndex < totalContextHints) {
+      // Show the next context hint
+      newHintText = contextHints[hintIndex];
+      setHintIndex(hintIndex + 1);
+    } else {
+      // All context hints shown — now do progressive letter reveals
+      const rev = letterReveal;
+      const parts: string[] = [];
+      if (guessMode === "song" || guessMode === "either" || guessMode === "both") {
+        parts.push(`Song: ${generateLetterHint(track.name, rev)}`);
+      }
+      if (guessMode === "artist" || guessMode === "either" || guessMode === "both") {
+        parts.push(`Artist: ${generateLetterHint(track.artists[0].name, rev)}`);
+      }
+      newHintText = parts.join("  •  ");
+      setLetterReveal(rev + 1);
+      setHintIndex(hintIndex + 1);
     }
-    if (guessMode === "artist" || guessMode === "either" || guessMode === "both") {
-      if (hintText) hintText += "  •  ";
-      hintText += `Artist: ${generateHint(track.artists[0].name, reveal)}`;
-    }
-    setHint(hintText);
-    setHintReveal(reveal + 1);
-  }, [game, guessMode, hintReveal]);
+
+    setHints(prev => [...prev, newHintText]);
+  }, [game, guessMode, hintIndex, letterReveal]);
 
   // ─── Submit guess ────────────────────────────────────────────────
   const submitGuess = useCallback((guessText: string) => {
@@ -484,7 +540,6 @@ export default function Game() {
       } else {
         setGuessAttempt(newAttempt);
         setGuess("");
-        setHint(null); // reset hint display (player must tap again)
         // Extend clip automatically on wrong guess
         clearTimers();
         pausePlayback();
@@ -589,7 +644,7 @@ export default function Game() {
         onGiveUp={giveUp}
         result={result} revealed={revealed}
         wrongGuesses={wrongGuesses}
-        hint={hint}
+        hints={hints}
         onShowHint={showHint}
         pointsEarned={pointsEarned}
         voiceState={voiceState} onToggleVoice={toggleVoice}
@@ -652,7 +707,7 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
             { icon: Mic, text: "Guess by voice or typing" },
             { icon: Clock, text: "6 chances per song, 5 seconds each" },
           ].map(({ icon: Icon, text }, i) => (
-            <div key={i} className="flex items-center gap-3 bg-card border border-border rounded-lg p-3 text-sm text-muted-foreground">
+            <div key={i} className="flex items-center gap-3 bg-card border border-border rounded-lg p-3 text-base text-muted-foreground">
               <Icon className="w-4 h-4 shrink-0 text-primary" />{text}
             </div>
           ))}
@@ -736,7 +791,7 @@ function PlaylistButton({ playlist, selected, onSelect }: { playlist: SpotifyPla
       </div>
       <div className="flex-1 min-w-0">
         <p className="font-medium text-sm text-foreground truncate">{playlist.name}</p>
-        <p className="text-xs text-muted-foreground">{playlist.tracks?.total ?? "?"} tracks</p>
+        <p className="text-sm text-muted-foreground">{playlist.tracks?.total ?? "?"} tracks</p>
       </div>
       {selected && <CheckCircle className="w-4 h-4 text-primary shrink-0" />}
     </button>
@@ -761,8 +816,8 @@ function SourceSelectScreen({
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <header className="flex items-center justify-between px-5 py-4 border-b border-border">
-        <button onClick={onBack} className="text-muted-foreground hover:text-foreground text-sm">← Back</button>
-        <span className="font-semibold text-sm">Choose your music</span>
+        <button onClick={onBack} className="text-muted-foreground hover:text-foreground text-base">← Back</button>
+        <span className="font-semibold text-base">Choose your music</span>
         <button onClick={onLogout} className="text-muted-foreground hover:text-foreground"><LogOut className="w-4 h-4" /></button>
       </header>
 
@@ -771,7 +826,7 @@ function SourceSelectScreen({
 
         {/* Column 1 — Guessing mode */}
         <div className="flex flex-col p-5 overflow-y-auto">
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">What are you guessing?</p>
+          <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">What are you guessing?</p>
           <div className="grid grid-cols-1 gap-2">
             {(["song", "artist", "either", "both"] as GuessMode[]).map((m) => (
               <button
@@ -793,7 +848,7 @@ function SourceSelectScreen({
 
         {/* Column 2 — Music source */}
         <div className="flex flex-col p-5 overflow-y-auto">
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Music source</p>
+          <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Music source</p>
           {/* Tabs */}
           <div className="flex gap-2 mb-3">
             {([["mine", "My Music"], ["spotify", "Spotify Playlists"]] as const).map(([tab, label]) => (
@@ -822,7 +877,7 @@ function SourceSelectScreen({
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="font-medium text-sm text-foreground">Liked Songs</p>
-                    <p className="text-xs text-muted-foreground">Your saved tracks</p>
+                    <p className="text-sm text-muted-foreground">Your saved tracks</p>
                   </div>
                   {selectedSource === "liked" && <CheckCircle className="w-4 h-4 text-primary ml-auto" />}
                 </button>
@@ -835,7 +890,7 @@ function SourceSelectScreen({
                     <button onClick={onClearCategory} className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground py-1 mb-1">
                       ← Back to genres
                     </button>
-                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">{selectedCategory.name}</p>
+                    <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-2">{selectedCategory.name}</p>
                     {categoryPlaylists.length === 0 && !loading && (
                       <p className="text-sm text-muted-foreground text-center py-4">No playlists found for this genre.</p>
                     )}
@@ -845,13 +900,13 @@ function SourceSelectScreen({
                   <>
                     {featuredPlaylists.length > 0 && (
                       <div className="space-y-2 mb-3">
-                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Featured</p>
+                        <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Featured</p>
                         {featuredPlaylists.map(pl => <PlaylistButton key={pl.id} playlist={pl} selected={selectedSource === pl.id} onSelect={() => onSelect(pl.id)} />)}
                       </div>
                     )}
                     {categories.length > 0 ? (
                       <>
-                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Browse by genre</p>
+                        <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-2">Browse by genre</p>
                         <div className="grid grid-cols-2 gap-2">
                           {categories.map(cat => (
                             <button
@@ -863,7 +918,7 @@ function SourceSelectScreen({
                                 <img src={cat.icons[0].url} alt={cat.name} className="absolute inset-0 w-full h-full object-cover opacity-40" />
                               )}
                               <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent p-2 flex items-end">
-                                <span className="font-semibold text-xs text-white drop-shadow">{cat.name}</span>
+                                <span className="font-semibold text-sm text-white drop-shadow">{cat.name}</span>
                               </div>
                             </button>
                           ))}
@@ -884,7 +939,7 @@ function SourceSelectScreen({
 
         {/* Column 3 — Start game summary */}
         <div className="flex flex-col p-5">
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Ready to play?</p>
+          <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Ready to play?</p>
 
           <div className="space-y-3 flex-1">
             <div className="bg-card border border-border rounded-xl p-4 space-y-2 text-sm">
@@ -907,9 +962,9 @@ function SourceSelectScreen({
             </div>
 
             <div className="bg-card border border-border rounded-xl p-4 text-sm space-y-1">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Scoring</p>
+              <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-2">Scoring</p>
               {GUESS_POINTS.slice(0, MAX_GUESSES).map((pts, i) => (
-                <div key={i} className="flex items-center justify-between text-xs">
+                <div key={i} className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">Guess {i + 1} ({(INITIAL_CLIP_MS + i * EXTRA_CLIP_MS) / 1000}s clip)</span>
                   <span className="font-semibold text-primary">{pts} pts</span>
                 </div>
@@ -917,12 +972,12 @@ function SourceSelectScreen({
             </div>
 
             <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 text-sm text-muted-foreground space-y-1">
-              <p className="font-medium text-foreground text-xs mb-1">Tips</p>
-              <p className="text-xs">• You get {MAX_GUESSES} guesses per song</p>
-              <p className="text-xs">• Each wrong guess plays 5 more seconds</p>
-              <p className="text-xs">• Use hints for first-letter clues</p>
-              <p className="text-xs">• Close spellings count — no need to be exact</p>
-              {guessMode === "both" && <p className="text-xs">• "Both" mode gives partial credit for one correct</p>}
+              <p className="font-medium text-foreground text-sm mb-1">Tips</p>
+              <p className="text-sm">• You get {MAX_GUESSES} guesses per song</p>
+              <p className="text-sm">• Each wrong guess plays 5 more seconds</p>
+              <p className="text-sm">• Use hints for first-letter clues</p>
+              <p className="text-sm">• Close spellings count — no need to be exact</p>
+              {guessMode === "both" && <p className="text-sm">• "Both" mode gives partial credit for one correct</p>}
             </div>
           </div>
 
@@ -940,7 +995,7 @@ function SourceSelectScreen({
 function PlayingScreen({
   game, track, isPlaying, clipTimer, clipDurationMs, guessAttempt,
   guess, onGuessChange, onSubmit, onPlayClip, onMoreTime, onNext, onGiveUp,
-  result, revealed, wrongGuesses, hint, onShowHint, pointsEarned,
+  result, revealed, wrongGuesses, hints, onShowHint, pointsEarned,
   voiceState, onToggleVoice, sdkReady, playerError, guessMode, onLogout,
 }: {
   game: GameState; track: SpotifyTrack; isPlaying: boolean; clipTimer: number;
@@ -949,7 +1004,7 @@ function PlayingScreen({
   onSubmit: () => void; onPlayClip: () => void; onMoreTime: () => void;
   onNext: () => void; onGiveUp: () => void;
   result: GuessResult; revealed: boolean;
-  wrongGuesses: string[]; hint: string | null; onShowHint: () => void;
+  wrongGuesses: string[]; hints: string[]; onShowHint: () => void;
   pointsEarned: number;
   voiceState: string; onToggleVoice: () => void; sdkReady: boolean;
   playerError: string | null; guessMode: GuessMode; onLogout: () => void;
@@ -997,7 +1052,7 @@ function PlayingScreen({
 
         {/* Column 1 — Guessing matrix (attempts) */}
         <div className="flex flex-col p-5 space-y-3">
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Your guesses</p>
+          <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Your guesses</p>
 
           {/* Attempt bubbles */}
           <div className="space-y-2 flex-1">
@@ -1016,26 +1071,30 @@ function PlayingScreen({
                       : "bg-muted/20 border-border/30 text-muted-foreground/40"
                   }`}
                 >
-                  <span className="text-xs font-mono w-4 shrink-0 text-muted-foreground">{i + 1}</span>
+                  <span className="text-sm font-mono w-5 shrink-0 text-muted-foreground">{i + 1}</span>
                   {pastGuess ? (
                     <>
                       <XCircle className="w-3 h-3 shrink-0 text-red-400" />
                       <span className="truncate italic">{pastGuess}</span>
                     </>
                   ) : isCurrent ? (
-                    <span className="text-xs text-primary animate-pulse">← your turn</span>
+                    <span className="text-sm text-primary animate-pulse">← your turn</span>
                   ) : (
-                    <span className="text-xs opacity-40">—</span>
+                    <span className="text-sm opacity-40">—</span>
                   )}
                 </div>
               );
             })}
           </div>
 
-          {/* Hint display */}
-          {hint && (
-            <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 text-xs text-amber-400 font-mono">
-              {hint}
+          {/* Hints list — all revealed hints shown stacked */}
+          {hints.length > 0 && (
+            <div className="space-y-1.5">
+              {hints.map((h, i) => (
+                <div key={i} className="bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 text-sm text-amber-300">
+                  <span className="text-amber-500 font-bold mr-2">#{i + 1}</span>{h}
+                </div>
+              ))}
             </div>
           )}
 
@@ -1052,7 +1111,7 @@ function PlayingScreen({
 
         {/* Column 2 — Album art + playback */}
         <div className="flex flex-col items-center justify-between p-5 space-y-4">
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider self-start">Now playing</p>
+          <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider self-start">Now playing</p>
 
           {/* Album art — hidden while playing, revealed when round done */}
           <div className={`transition-all duration-700 ${revealed ? "opacity-100 scale-100" : "opacity-0 scale-75 pointer-events-none"}`}>
@@ -1066,7 +1125,7 @@ function PlayingScreen({
             <div className="text-center space-y-1 mt-3 animate-in fade-in slide-in-from-bottom-2 duration-300">
               <p className="font-bold text-xl">{track.name}</p>
               <p className="text-muted-foreground">{track.artists.map(a => a.name).join(", ")}</p>
-              <p className="text-xs text-muted-foreground/60">{track.album.name}</p>
+              <p className="text-sm text-muted-foreground">{track.album.name}</p>
             </div>
           </div>
 
@@ -1083,7 +1142,7 @@ function PlayingScreen({
               <div className="h-1.5 bg-muted rounded-full overflow-hidden">
                 <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${progress}%` }} />
               </div>
-              <div className="flex justify-between text-xs text-muted-foreground font-mono">
+              <div className="flex justify-between text-sm text-muted-foreground font-mono">
                 <span className="flex items-center gap-1"><Volume2 className="w-3 h-3 animate-pulse" /> Playing…</span>
                 <span>{clipTimer.toFixed(1)}s</span>
               </div>
@@ -1116,7 +1175,7 @@ function PlayingScreen({
 
         {/* Column 3 — Text input + controls */}
         <div className="flex flex-col p-5 space-y-4">
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+          <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
             {result === null ? `Guess ${guessAttempt + 1} of ${MAX_GUESSES}` : "Round complete"}
           </p>
 
@@ -1151,7 +1210,7 @@ function PlayingScreen({
                     {voiceState === "listening" ? <MicOff className="w-5 h-5 animate-pulse" /> : <Mic className="w-5 h-5" />}
                   </Button>
                 </div>
-                {voiceState === "listening" && <p className="text-xs text-primary text-center animate-pulse">Listening… say your answer</p>}
+                {voiceState === "listening" && <p className="text-sm text-primary text-center animate-pulse">Listening… say your answer</p>}
 
                 <Button data-testid="button-submit" onClick={onSubmit} disabled={!guess.trim()} className="w-full h-11">
                   Submit Guess
@@ -1181,7 +1240,7 @@ function PlayingScreen({
               </div>
 
               {/* Mode reminder */}
-              <div className="bg-card border border-border rounded-lg p-3 text-xs text-muted-foreground">
+              <div className="bg-card border border-border rounded-lg p-3 text-sm text-muted-foreground">
                 <span className="font-medium text-foreground">Mode: </span>{GUESS_MODE_LABELS[guessMode]}
                 {guessMode === "both" && <span className="block mt-1 opacity-70">Tip: type both "Song — Artist" or just the song for partial credit</span>}
                 {guessMode === "either" && <span className="block mt-1 opacity-70">Tip: just the song title or artist name both work</span>}
@@ -1198,18 +1257,18 @@ function PlayingScreen({
                   <span className="font-semibold">{feedbackMsg}</span>
                 </div>
                 {result !== "wrong" && (
-                  <p className="text-xs opacity-70">Guessed on attempt {guessAttempt + 1}</p>
+                  <p className="text-sm opacity-80">Guessed on attempt {guessAttempt + 1}</p>
                 )}
               </div>
 
               <div className="bg-card border border-border rounded-xl p-4 space-y-2 text-sm">
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">The answer</p>
+                <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">The answer</p>
                 <p className="font-bold text-foreground">{track.name}</p>
                 <p className="text-muted-foreground">{track.artists.map(a => a.name).join(", ")}</p>
-                <p className="text-xs text-muted-foreground/60">{track.album.name}</p>
+                <p className="text-sm text-muted-foreground">{track.album.name}</p>
               </div>
 
-              <div className="grid grid-cols-3 gap-2 text-center text-xs">
+              <div className="grid grid-cols-3 gap-2 text-center text-sm">
                 <div className="bg-card border border-border rounded-lg p-2">
                   <p className="font-bold text-lg text-foreground">{game.score}</p>
                   <p className="text-muted-foreground">Score</p>
@@ -1255,7 +1314,7 @@ function GameOverScreen({ game, user, onPlayAgain, onLogout }: {
           ].map(({ label, value }) => (
             <div key={label} className="bg-card border border-border rounded-xl p-4 space-y-1">
               <p className="text-xl font-bold">{value}</p>
-              <p className="text-xs text-muted-foreground">{label}</p>
+              <p className="text-sm text-muted-foreground">{label}</p>
             </div>
           ))}
         </div>

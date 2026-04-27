@@ -166,18 +166,46 @@ export async function getPlaylistTracks(playlistId: string, token: string): Prom
   return tracks;
 }
 
+// Hardcoded genre list with search queries — replaces deprecated /browse/categories
+export const GENRE_CATEGORIES: SpotifyCategory[] = [
+  { id: "70s rock",        name: "70s Rock",        icons: [] },
+  { id: "80s hits",        name: "80s Hits",         icons: [] },
+  { id: "90s alternative", name: "90s Alternative",  icons: [] },
+  { id: "2000s pop",       name: "2000s Pop",        icons: [] },
+  { id: "hip hop",         name: "Hip Hop",          icons: [] },
+  { id: "pop hits",        name: "Pop Hits",         icons: [] },
+  { id: "classic rock",    name: "Classic Rock",     icons: [] },
+  { id: "country",         name: "Country",          icons: [] },
+  { id: "r&b soul",        name: "R&B & Soul",       icons: [] },
+  { id: "jazz",            name: "Jazz",             icons: [] },
+  { id: "latin",           name: "Latin",            icons: [] },
+  { id: "indie",           name: "Indie",            icons: [] },
+  { id: "metal",           name: "Metal",            icons: [] },
+  { id: "electronic dance",name: "Electronic / Dance",icons: [] },
+  { id: "blues",           name: "Blues",            icons: [] },
+  { id: "reggae",          name: "Reggae",           icons: [] },
+  { id: "punk rock",       name: "Punk Rock",        icons: [] },
+  { id: "broadway musicals",name: "Broadway",        icons: [] },
+  { id: "workout hits",    name: "Workout",          icons: [] },
+  { id: "christmas holiday",name: "Holiday",         icons: [] },
+];
+
 export async function getCategories(token: string): Promise<SpotifyCategory[]> {
-  const data = await spotifyFetch("/browse/categories?limit=50&country=US", token);
-  return data.categories.items;
+  // Return hardcoded list — Spotify deprecated /browse/categories in 2023
+  return GENRE_CATEGORIES;
 }
 
-export async function getCategoryPlaylists(categoryId: string, token: string): Promise<SpotifyPlaylist[]> {
-  const data = await spotifyFetch(`/browse/categories/${categoryId}/playlists?limit=20&country=US`, token);
-  return (data.playlists?.items || []).filter((p: any) => p && p.id && p.tracks);
+// Search Spotify for playlists matching a genre query
+export async function getCategoryPlaylists(genreQuery: string, token: string): Promise<SpotifyPlaylist[]> {
+  const q = encodeURIComponent(genreQuery);
+  const data = await spotifyFetch(`/search?q=${q}&type=playlist&limit=20&market=US`, token);
+  const items = data.playlists?.items || [];
+  return items.filter((p: any) => p && p.id && p.tracks);
 }
 
 export async function getFeaturedPlaylists(token: string): Promise<SpotifyPlaylist[]> {
-  const data = await spotifyFetch("/browse/featured-playlists?limit=20&country=US", token);
+  // Featured playlists endpoint also deprecated — search for "top hits" as a fallback
+  const data = await spotifyFetch("/search?q=top+hits+playlist&type=playlist&limit=10&market=US", token);
   return (data.playlists?.items || []).filter((p: any) => p && p.id && p.tracks);
 }
 
