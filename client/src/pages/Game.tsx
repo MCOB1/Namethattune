@@ -46,11 +46,14 @@ import {
   Star,
   ChevronDown,
   Clock,
+  Lightbulb,
+  Flag,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type GameView = "setup" | "source-select" | "playing" | "game-over";
 type GuessMode = "song" | "artist" | "either" | "both";
+type GuessResult = "correct" | "partial" | "wrong" | null;
 
 interface GameState {
   tracks: SpotifyTrack[];
@@ -62,44 +65,15 @@ interface GameState {
   totalRounds: number;
 }
 
-// Clip steps in ms: 3s, 6s, 9s, 30s (full preview)
-const CLIP_STEPS = [3000, 6000, 9000, 30000];
+// Each wrong guess adds 5 seconds. Max 6 guesses total.
+const INITIAL_CLIP_MS = 5000;
+const EXTRA_CLIP_MS = 5000;
+const MAX_GUESSES = 6;
 const ROUNDS_PER_GAME = 10;
 
-// Points awarded based on clip step used (fewer seconds = more points)
-const STEP_POINTS = [5, 3, 2, 1];
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function normalize(str: string): string {
-  return str.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
-}
-
-function titleMatch(guess: string, track: SpotifyTrack): boolean {
-  const g = normalize(guess);
-  const t = normalize(track.name);
-  return g === t || (t.includes(g) && g.length >= 3);
-}
-
-function artistMatch(guess: string, track: SpotifyTrack): boolean {
-  const g = normalize(guess);
-  return track.artists.some((a) => {
-    const n = normalize(a.name);
-    return g === n || (n.includes(g) && g.length >= 3);
-  });
-}
-
-function checkGuess(guess: string, track: SpotifyTrack, mode: GuessMode): boolean {
-  switch (mode) {
-    case "song":   return titleMatch(guess, track);
-    case "artist": return artistMatch(guess, track);
-    case "either": return titleMatch(guess, track) || artistMatch(guess, track);
-    case "both":   return titleMatch(guess, track) && artistMatch(guess, track);
-  }
-}
-
-function getAlbumArt(track: SpotifyTrack): string {
-  return track.album.images?.[0]?.url || "";
-}
+// Points: more points for getting it in fewer guesses
+const GUESS_POINTS = [5, 4, 3, 2, 1, 1]; // indexed by guess attempt (0-based)
+const PARTIAL_MULTIPLIER = 0.5; // partial credit = half points, rounded
 
 const GUESS_MODE_LABELS: Record<GuessMode, string> = {
   song:   "Song title",
@@ -107,6 +81,89 @@ const GUESS_MODE_LABELS: Record<GuessMode, string> = {
   either: "Song or Artist",
   both:   "Song AND Artist",
 };
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function normalize(str: string): string {
+  return str
+    .toLowerCase()
+    .replace(/[''`]/g, "'")
+    .replace(/[^a-z0-9'\s]/g, "")
+    .replace(/\b(the|a|an|and|&|feat|ft|featuring)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Levenshtein distance for fuzzy matching
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+  return dp[m][n];
+}
+
+function fuzzyMatch(guess: string, target: string): boolean {
+  const g = normalize(guess);
+  const t = normalize(target);
+  if (!g || !t) return false;
+  // Exact after normalize
+  if (g === t) return true;
+  // Substring (3+ chars)
+  if (g.length >= 3 && t.includes(g)) return true;
+  if (t.length >= 3 && g.includes(t)) return true;
+  // Levenshtein within ~20% of longer string
+  const maxDist = Math.floor(Math.max(g.length, t.length) * 0.25);
+  return maxDist > 0 && levenshtein(g, t) <= maxDist;
+}
+
+function titleMatch(guess: string, track: SpotifyTrack): boolean {
+  return fuzzyMatch(guess, track.name);
+}
+
+function artistMatch(guess: string, track: SpotifyTrack): boolean {
+  return track.artists.some((a) => fuzzyMatch(guess, a.name));
+}
+
+// Returns "correct", "partial", or "wrong"
+function checkGuess(guess: string, track: SpotifyTrack, mode: GuessMode): GuessResult {
+  const songOk = titleMatch(guess, track);
+  const artistOk = artistMatch(guess, track);
+
+  switch (mode) {
+    case "song":
+      return songOk ? "correct" : "wrong";
+    case "artist":
+      return artistOk ? "correct" : "wrong";
+    case "either":
+      return (songOk || artistOk) ? "correct" : "wrong";
+    case "both":
+      if (songOk && artistOk) return "correct";
+      if (songOk || artistOk) return "partial"; // got one of two
+      return "wrong";
+  }
+}
+
+function getAlbumArt(track: SpotifyTrack): string {
+  return track.album.images?.[0]?.url || "";
+}
+
+// Generate a hint: first letters of each word, rest hidden
+// e.g. "Hotel California" → "H_____ C_________"
+function generateHint(text: string, revealCount: number): string {
+  return text
+    .split(" ")
+    .map((word) => {
+      if (!word) return "";
+      const reveal = Math.min(revealCount, word.length);
+      return word.slice(0, reveal) + "_".repeat(word.length - reveal);
+    })
+    .join(" ");
+}
 
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function Game() {
@@ -118,7 +175,7 @@ export default function Game() {
   const [authLoading, setAuthLoading] = useState(true);
   const [clientIdMissing, setClientIdMissing] = useState(false);
 
-  // Source selection tabs: "mine" | "spotify" | category id
+  // Source selection
   const [sourceTab, setSourceTab] = useState<"mine" | "spotify">("mine");
   const [myPlaylists, setMyPlaylists] = useState<SpotifyPlaylist[]>([]);
   const [categories, setCategories] = useState<SpotifyCategory[]>([]);
@@ -136,16 +193,21 @@ export default function Game() {
   const [game, setGame] = useState<GameState | null>(null);
   const [guess, setGuess] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
-  const [result, setResult] = useState<"correct" | "wrong" | null>(null);
+  const [result, setResult] = useState<GuessResult>(null);
   const [loadingTracks, setLoadingTracks] = useState(false);
   const [sdkReady, setSdkReady] = useState(false);
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [playerError, setPlayerError] = useState<string | null>(null);
   const [revealed, setRevealed] = useState(false);
 
-  // Clip progression
-  const [clipStepIndex, setClipStepIndex] = useState(0); // 0=3s, 1=6s, 2=9s, 3=30s
-  const [clipTimer, setClipTimer] = useState(CLIP_STEPS[0] / 1000);
+  // Per-round tracking
+  const [guessAttempt, setGuessAttempt] = useState(0); // 0-based, which attempt we're on
+  const [clipDurationMs, setClipDurationMs] = useState(INITIAL_CLIP_MS);
+  const [clipTimer, setClipTimer] = useState(INITIAL_CLIP_MS / 1000);
+  const [wrongGuesses, setWrongGuesses] = useState<string[]>([]);
+  const [hint, setHint] = useState<string | null>(null);
+  const [hintReveal, setHintReveal] = useState(1); // how many letters revealed
+  const [pointsEarned, setPointsEarned] = useState(0);
 
   const playerRef = useRef<any>(null);
   const clipTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -168,11 +230,9 @@ export default function Game() {
   // ─── OAuth callback ──────────────────────────────────────────────
   useEffect(() => {
     if (!SPOTIFY_CLIENT_ID) { setClientIdMissing(true); setAuthLoading(false); return; }
-
     const params = new URLSearchParams(window.location.search);
     const code = params.get("code");
     const state = params.get("state");
-
     if (code && state) {
       window.history.replaceState({}, "", window.location.pathname);
       setAuthLoading(true);
@@ -232,9 +292,13 @@ export default function Game() {
         getCategories(token),
         getFeaturedPlaylists(token),
       ]);
-      setCategories(cats);
-      setFeaturedPlaylists(featured);
-    } catch {}
+      setCategories(cats || []);
+      setFeaturedPlaylists(featured || []);
+    } catch (e) {
+      console.error("Failed to load categories:", e);
+      setCategories([]);
+      setFeaturedPlaylists([]);
+    }
     setLoadingPlaylists(false);
   }, [getValidToken]);
 
@@ -245,7 +309,12 @@ export default function Game() {
     setSelectedCategory(cat);
     setCategoryPlaylists([]);
     setLoadingPlaylists(true);
-    try { setCategoryPlaylists(await getCategoryPlaylists(cat.id, token)); } catch {}
+    try {
+      const pls = await getCategoryPlaylists(cat.id, token);
+      setCategoryPlaylists(pls || []);
+    } catch {
+      setCategoryPlaylists([]);
+    }
     setLoadingPlaylists(false);
   }, [getValidToken]);
 
@@ -254,6 +323,21 @@ export default function Game() {
     if (sourceTab === "mine") loadMyPlaylists();
     else loadCategories();
   }, [tokens, view, sourceTab]);
+
+  // ─── Reset round state ───────────────────────────────────────────
+  const resetRound = useCallback(() => {
+    setGuess("");
+    setResult(null);
+    setRevealed(false);
+    setIsPlaying(false);
+    setGuessAttempt(0);
+    setClipDurationMs(INITIAL_CLIP_MS);
+    setClipTimer(INITIAL_CLIP_MS / 1000);
+    setWrongGuesses([]);
+    setHint(null);
+    setHintReveal(1);
+    setPointsEarned(0);
+  }, []);
 
   // ─── Start game ──────────────────────────────────────────────────
   const startGame = useCallback(async () => {
@@ -272,14 +356,13 @@ export default function Game() {
       }
       const shuffled = shuffleArray(tracks).slice(0, ROUNDS_PER_GAME);
       setGame({ tracks: shuffled, currentIndex: 0, score: 0, streak: 0, bestStreak: 0, roundsWon: 0, totalRounds: shuffled.length });
-      setGuess(""); setResult(null); setRevealed(false);
-      setClipStepIndex(0); setClipTimer(CLIP_STEPS[0] / 1000);
+      resetRound();
       setView("playing");
     } catch (e) {
       toast({ title: "Failed to load tracks", description: String(e), variant: "destructive" });
     }
     setLoadingTracks(false);
-  }, [getValidToken, selectedSource, toast]);
+  }, [getValidToken, selectedSource, toast, resetRound]);
 
   // ─── Clear timers ────────────────────────────────────────────────
   const clearTimers = useCallback(() => {
@@ -299,40 +382,25 @@ export default function Game() {
   }, [getValidToken, deviceId]);
 
   // ─── Play clip ───────────────────────────────────────────────────
-  const playClip = useCallback(async (stepIndex: number, fromStart: boolean) => {
-    if (!game || !deviceId || !sdkReady || isPlaying) return;
+  const playClip = useCallback(async (durationMs: number, startFromMs: number = 0) => {
+    if (!game || !deviceId || !sdkReady) return;
     const track = game.tracks[game.currentIndex];
     const token = await getValidToken();
     if (!token) return;
 
-    const durationMs = CLIP_STEPS[stepIndex];
-    // When extending, start from where the previous clip ended
-    const positionMs = fromStart ? 0 : CLIP_STEPS[stepIndex - 1];
-
     setIsPlaying(true);
-    setClipTimer(durationMs / 1000);
+    const segmentMs = durationMs - startFromMs;
+    let remaining = segmentMs / 1000;
+    setClipTimer(remaining);
 
     try {
-      if (fromStart) {
-        // New song — start from beginning
-        await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-          method: "PUT",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ uris: [track.uri], position_ms: 0 }),
-        });
-      } else {
-        // Seek to where the previous clip ended and continue
-        await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-          method: "PUT",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ uris: [track.uri], position_ms: positionMs }),
-        });
-      }
+      await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ uris: [track.uri], position_ms: startFromMs }),
+      });
 
-      const segmentMs = durationMs - positionMs;
-      let remaining = segmentMs / 1000;
-      setClipTimer(remaining);
-
+      clearTimers();
       clipTimerRef.current = setInterval(() => {
         remaining -= 0.1;
         setClipTimer(Math.max(0, remaining));
@@ -348,42 +416,96 @@ export default function Game() {
       setIsPlaying(false);
       toast({ title: "Playback failed", description: "Check your Spotify connection.", variant: "destructive" });
     }
-  }, [game, deviceId, sdkReady, isPlaying, getValidToken, clearTimers, pausePlayback, toast]);
+  }, [game, deviceId, sdkReady, getValidToken, clearTimers, pausePlayback, toast]);
 
-  // ─── More time ───────────────────────────────────────────────────
+  // ─── Play more time (after wrong guess) ─────────────────────────
   const playMoreTime = useCallback(async () => {
     clearTimers();
     await pausePlayback();
-    const nextStep = clipStepIndex + 1;
-    setClipStepIndex(nextStep);
-    // Small delay to let pause settle
-    setTimeout(() => playClip(nextStep, false), 400);
-  }, [clipStepIndex, clearTimers, pausePlayback, playClip]);
+    const prevDuration = clipDurationMs;
+    const newDuration = clipDurationMs + EXTRA_CLIP_MS;
+    setClipDurationMs(newDuration);
+    setTimeout(() => playClip(newDuration, prevDuration), 400);
+  }, [clipDurationMs, clearTimers, pausePlayback, playClip]);
+
+  // ─── Hint ────────────────────────────────────────────────────────
+  const showHint = useCallback(() => {
+    if (!game) return;
+    const track = game.tracks[game.currentIndex];
+    const reveal = hintReveal;
+    let hintText = "";
+    if (guessMode === "song" || guessMode === "either" || guessMode === "both") {
+      hintText += `Song: ${generateHint(track.name, reveal)}`;
+    }
+    if (guessMode === "artist" || guessMode === "either" || guessMode === "both") {
+      if (hintText) hintText += "  •  ";
+      hintText += `Artist: ${generateHint(track.artists[0].name, reveal)}`;
+    }
+    setHint(hintText);
+    setHintReveal(reveal + 1);
+  }, [game, guessMode, hintReveal]);
 
   // ─── Submit guess ────────────────────────────────────────────────
   const submitGuess = useCallback((guessText: string) => {
     if (!game || result !== null || !guessText.trim()) return;
     const track = game.tracks[game.currentIndex];
-    const correct = checkGuess(guessText, track, guessMode);
+    const guessResult = checkGuess(guessText, track, guessMode);
 
+    if (guessResult === "correct" || guessResult === "partial") {
+      clearTimers();
+      pausePlayback();
+
+      const basePoints = GUESS_POINTS[Math.min(guessAttempt, GUESS_POINTS.length - 1)];
+      const pts = guessResult === "partial" ? Math.max(1, Math.round(basePoints * PARTIAL_MULTIPLIER)) : basePoints;
+
+      setPointsEarned(pts);
+      setGame(prev => prev ? {
+        ...prev,
+        score: prev.score + pts,
+        streak: prev.streak + 1,
+        bestStreak: Math.max(prev.bestStreak, prev.streak + 1),
+        roundsWon: prev.roundsWon + 1,
+      } : prev);
+      setResult(guessResult);
+      setRevealed(true);
+    } else {
+      // Wrong
+      const newAttempt = guessAttempt + 1;
+      const newWrong = [...wrongGuesses, guessText];
+      setWrongGuesses(newWrong);
+
+      if (newAttempt >= MAX_GUESSES) {
+        // Out of guesses — reveal answer
+        clearTimers();
+        pausePlayback();
+        setGame(prev => prev ? { ...prev, streak: 0 } : prev);
+        setResult("wrong");
+        setRevealed(true);
+      } else {
+        setGuessAttempt(newAttempt);
+        setGuess("");
+        setHint(null); // reset hint display (player must tap again)
+        // Extend clip automatically on wrong guess
+        clearTimers();
+        pausePlayback();
+        const newDuration = clipDurationMs + EXTRA_CLIP_MS;
+        setClipDurationMs(newDuration);
+        // play the new extra segment from where we left off
+        setTimeout(() => playClip(newDuration, clipDurationMs), 400);
+      }
+    }
+  }, [game, result, guessMode, guessAttempt, wrongGuesses, clipDurationMs, clearTimers, pausePlayback, playClip]);
+
+  // ─── Give up ─────────────────────────────────────────────────────
+  const giveUp = useCallback(() => {
+    if (!game || result !== null) return;
     clearTimers();
     pausePlayback();
-
-    const pointsEarned = correct ? STEP_POINTS[clipStepIndex] : 0;
-    const newStreak = correct ? game.streak + 1 : 0;
-    const newBestStreak = Math.max(game.bestStreak, newStreak);
-
-    setGame(prev => prev ? {
-      ...prev,
-      score: prev.score + pointsEarned,
-      streak: newStreak,
-      bestStreak: newBestStreak,
-      roundsWon: correct ? prev.roundsWon + 1 : prev.roundsWon,
-    } : prev);
-
-    setResult(correct ? "correct" : "wrong");
+    setGame(prev => prev ? { ...prev, streak: 0 } : prev);
+    setResult("wrong");
     setRevealed(true);
-  }, [game, result, guessMode, clipStepIndex, clearTimers, pausePlayback]);
+    setPointsEarned(0);
+  }, [game, result, clearTimers, pausePlayback]);
 
   // ─── Next round ──────────────────────────────────────────────────
   const nextRound = useCallback(async () => {
@@ -403,9 +525,8 @@ export default function Game() {
       return;
     }
     setGame(prev => prev ? { ...prev, currentIndex: nextIndex } : prev);
-    setGuess(""); setResult(null); setRevealed(false);
-    setIsPlaying(false); setClipStepIndex(0); setClipTimer(CLIP_STEPS[0] / 1000);
-  }, [game, user]);
+    resetRound();
+  }, [game, user, resetRound]);
 
   // ─── Voice input ─────────────────────────────────────────────────
   const { state: voiceState, toggle: toggleVoice } = useVoiceInput({
@@ -424,7 +545,6 @@ export default function Game() {
   if (!tokens || !user) return <LoginScreen onLogin={initiateSpotifyLogin} />;
 
   if (view === "source-select") {
-    if (!user) return <Spinner />;
     return (
       <SourceSelectScreen
         user={user}
@@ -459,13 +579,19 @@ export default function Game() {
     return (
       <PlayingScreen
         game={game} track={track}
-        isPlaying={isPlaying} clipTimer={clipTimer} clipStepIndex={clipStepIndex}
+        isPlaying={isPlaying} clipTimer={clipTimer}
+        clipDurationMs={clipDurationMs} guessAttempt={guessAttempt}
         guess={guess} onGuessChange={setGuess}
         onSubmit={() => submitGuess(guess)}
-        onPlayClip={() => playClip(0, true)}
+        onPlayClip={() => playClip(clipDurationMs, 0)}
         onMoreTime={playMoreTime}
         onNext={nextRound}
+        onGiveUp={giveUp}
         result={result} revealed={revealed}
+        wrongGuesses={wrongGuesses}
+        hint={hint}
+        onShowHint={showHint}
+        pointsEarned={pointsEarned}
         voiceState={voiceState} onToggleVoice={toggleVoice}
         sdkReady={sdkReady} playerError={playerError}
         guessMode={guessMode}
@@ -517,14 +643,14 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
           </div>
           <div>
             <h1 className="text-3xl font-bold tracking-tight">Name That Tune</h1>
-            <p className="text-muted-foreground mt-1">Identify songs from just 3 seconds</p>
+            <p className="text-muted-foreground mt-1">Identify songs from just a few seconds</p>
           </div>
         </div>
         <div className="space-y-3">
           {[
             { icon: Headphones, text: "Requires Spotify Premium" },
             { icon: Mic, text: "Guess by voice or typing" },
-            { icon: Clock, text: "Progressive hints: 3s → 6s → 9s" },
+            { icon: Clock, text: "6 chances per song, 5 seconds each" },
           ].map(({ icon: Icon, text }, i) => (
             <div key={i} className="flex items-center gap-3 bg-card border border-border rounded-lg p-3 text-sm text-muted-foreground">
               <Icon className="w-4 h-4 shrink-0 text-primary" />{text}
@@ -570,10 +696,10 @@ function HomeScreen({ user, sdkReady, playerError, onStart, onLogout }: {
         )}
         <div className="space-y-2">
           {[
-            { icon: Play, text: "Hit Play — hear the first 3 seconds" },
-            { icon: Clock, text: "Need more? Add 3 more seconds each time" },
+            { icon: Play, text: "Hit Play — hear the first 5 seconds" },
+            { icon: Clock, text: "Each wrong guess plays 5 more seconds" },
             { icon: Mic, text: "Guess by voice or typing — song, artist, or both" },
-            { icon: Trophy, text: "Score more points for faster guesses" },
+            { icon: Trophy, text: "Score more points for faster correct guesses" },
           ].map(({ icon: Icon, text }, i) => (
             <div key={i} className="flex items-center gap-3 text-sm text-muted-foreground">
               <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
@@ -599,20 +725,20 @@ function PlaylistButton({ playlist, selected, onSelect }: { playlist: SpotifyPla
   return (
     <button
       onClick={onSelect}
-      className={`w-full flex items-center gap-4 p-4 rounded-xl border text-left transition-all ${selected ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/50"}`}
+      className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${selected ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/50"}`}
     >
-      <div className="w-12 h-12 rounded-lg bg-muted flex items-center justify-center shrink-0 overflow-hidden">
+      <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center shrink-0 overflow-hidden">
         {playlist.images?.[0]?.url ? (
           <img src={playlist.images[0].url} alt={playlist.name} className="w-full h-full object-cover" />
         ) : (
-          <ListMusic className="w-6 h-6 text-muted-foreground" />
+          <ListMusic className="w-5 h-5 text-muted-foreground" />
         )}
       </div>
       <div className="flex-1 min-w-0">
-        <p className="font-semibold text-foreground truncate">{playlist.name}</p>
+        <p className="font-medium text-sm text-foreground truncate">{playlist.name}</p>
         <p className="text-xs text-muted-foreground">{playlist.tracks?.total ?? "?"} tracks</p>
       </div>
-      {selected && <CheckCircle className="w-5 h-5 text-primary shrink-0" />}
+      {selected && <CheckCircle className="w-4 h-4 text-primary shrink-0" />}
     </button>
   );
 }
@@ -620,7 +746,7 @@ function PlaylistButton({ playlist, selected, onSelect }: { playlist: SpotifyPla
 function SourceSelectScreen({
   user, sourceTab, onTabChange, myPlaylists, categories, selectedCategory,
   categoryPlaylists, featuredPlaylists, onSelectCategory, loading, selectedSource,
-  onSelect, guessMode, onGuessModeChange, onStart, onBack, loadingTracks, onLogout,
+  onSelect, guessMode, onGuessModeChange, onStart, onBack, loadingTracks, onLogout, onClearCategory,
 }: {
   user: SpotifyUser; sourceTab: "mine" | "spotify";
   onTabChange: (t: "mine" | "spotify") => void;
@@ -640,125 +766,216 @@ function SourceSelectScreen({
         <button onClick={onLogout} className="text-muted-foreground hover:text-foreground"><LogOut className="w-4 h-4" /></button>
       </header>
 
-      {/* Guess mode picker */}
-      <div className="px-5 pt-4 pb-2 space-y-2">
-        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">What are you guessing?</p>
-        <div className="grid grid-cols-2 gap-2">
-          {(["song", "artist", "either", "both"] as GuessMode[]).map((m) => (
-            <button
-              key={m}
-              onClick={() => onGuessModeChange(m)}
-              className={`p-3 rounded-xl border text-sm font-medium transition-all text-left ${guessMode === m ? "border-primary bg-primary/10 text-primary" : "border-border bg-card text-muted-foreground hover:border-primary/50"}`}
-            >
-              {GUESS_MODE_LABELS[m]}
-            </button>
-          ))}
-        </div>
-      </div>
+      {/* 3-column layout */}
+      <div className="flex-1 overflow-hidden grid grid-cols-1 md:grid-cols-3 gap-0 divide-y md:divide-y-0 md:divide-x divide-border">
 
-      {/* Source tabs */}
-      <div className="px-5 pt-3 pb-2">
-        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Music source</p>
-        <div className="flex gap-2">
-          {([["mine", "My Music"], ["spotify", "Spotify Playlists"]] as const).map(([tab, label]) => (
-            <button
-              key={tab}
-              onClick={() => onTabChange(tab)}
-              className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${sourceTab === tab ? "bg-primary text-primary-foreground" : "bg-card border border-border text-muted-foreground hover:border-primary/50"}`}
-            >
-              {label}
-            </button>
-          ))}
+        {/* Column 1 — Guessing mode */}
+        <div className="flex flex-col p-5 overflow-y-auto">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">What are you guessing?</p>
+          <div className="grid grid-cols-1 gap-2">
+            {(["song", "artist", "either", "both"] as GuessMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => onGuessModeChange(m)}
+                className={`p-3 rounded-xl border text-sm font-medium transition-all text-left ${guessMode === m ? "border-primary bg-primary/10 text-primary" : "border-border bg-card text-muted-foreground hover:border-primary/50"}`}
+              >
+                <span className="block font-semibold">{GUESS_MODE_LABELS[m]}</span>
+                <span className="block text-xs opacity-70 mt-0.5">
+                  {m === "song" && "Identify the track title only"}
+                  {m === "artist" && "Identify the performer only"}
+                  {m === "either" && "Name either the song or artist"}
+                  {m === "both" && "Name both — partial credit if one"}
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
 
-      {/* Playlist list */}
-      <div className="flex-1 overflow-y-auto px-5 pb-2 space-y-2">
-        {loading ? (
-          <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
-        ) : sourceTab === "mine" ? (
-          <>
-            {/* Liked songs */}
-            <button
-              onClick={() => onSelect("liked")}
-              className={`w-full flex items-center gap-4 p-4 rounded-xl border text-left transition-all ${selectedSource === "liked" ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/50"}`}
-            >
-              <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center shrink-0">
-                <Heart className="w-6 h-6 text-white" />
-              </div>
-              <div><p className="font-semibold text-foreground">Liked Songs</p><p className="text-xs text-muted-foreground">Your saved tracks</p></div>
-              {selectedSource === "liked" && <CheckCircle className="w-5 h-5 text-primary ml-auto" />}
-            </button>
-            {myPlaylists.map(pl => <PlaylistButton key={pl.id} playlist={pl} selected={selectedSource === pl.id} onSelect={() => onSelect(pl.id)} />)}
-          </>
-        ) : (
-          <>
-            {/* Category browser */}
-            {!selectedCategory ? (
+        {/* Column 2 — Music source */}
+        <div className="flex flex-col p-5 overflow-y-auto">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Music source</p>
+          {/* Tabs */}
+          <div className="flex gap-2 mb-3">
+            {([["mine", "My Music"], ["spotify", "Spotify Playlists"]] as const).map(([tab, label]) => (
+              <button
+                key={tab}
+                onClick={() => onTabChange(tab)}
+                className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all ${sourceTab === tab ? "bg-primary text-primary-foreground" : "bg-card border border-border text-muted-foreground hover:border-primary/50"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Playlist list */}
+          <div className="flex-1 space-y-2 min-h-0">
+            {loading ? (
+              <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
+            ) : sourceTab === "mine" ? (
               <>
-                {featuredPlaylists.length > 0 && (
-                  <div className="space-y-2">
-                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider pt-1">Featured</p>
-                    {featuredPlaylists.map(pl => <PlaylistButton key={pl.id} playlist={pl} selected={selectedSource === pl.id} onSelect={() => onSelect(pl.id)} />)}
+                <button
+                  onClick={() => onSelect("liked")}
+                  className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${selectedSource === "liked" ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/50"}`}
+                >
+                  <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center shrink-0">
+                    <Heart className="w-5 h-5 text-white" />
                   </div>
-                )}
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider pt-2">Browse by Genre</p>
-                <div className="grid grid-cols-2 gap-2">
-                  {categories.map(cat => (
-                    <button
-                      key={cat.id}
-                      onClick={() => onSelectCategory(cat)}
-                      className="relative h-20 rounded-xl overflow-hidden border border-border bg-card hover:border-primary/50 transition-all text-left"
-                    >
-                      {cat.icons?.[0]?.url && <img src={cat.icons[0].url} alt={cat.name} className="absolute inset-0 w-full h-full object-cover opacity-40" />}
-                      <div className="absolute inset-0 p-3 flex items-end">
-                        <span className="font-semibold text-sm text-foreground drop-shadow">{cat.name}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-sm text-foreground">Liked Songs</p>
+                    <p className="text-xs text-muted-foreground">Your saved tracks</p>
+                  </div>
+                  {selectedSource === "liked" && <CheckCircle className="w-4 h-4 text-primary ml-auto" />}
+                </button>
+                {myPlaylists.map(pl => <PlaylistButton key={pl.id} playlist={pl} selected={selectedSource === pl.id} onSelect={() => onSelect(pl.id)} />)}
               </>
             ) : (
               <>
-                <button onClick={onClearCategory} className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground py-1">
-                  ← {selectedCategory.name}
-                </button>
-                {categoryPlaylists.map(pl => <PlaylistButton key={pl.id} playlist={pl} selected={selectedSource === pl.id} onSelect={() => onSelect(pl.id)} />)}
+                {selectedCategory ? (
+                  <>
+                    <button onClick={onClearCategory} className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground py-1 mb-1">
+                      ← Back to genres
+                    </button>
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">{selectedCategory.name}</p>
+                    {categoryPlaylists.length === 0 && !loading && (
+                      <p className="text-sm text-muted-foreground text-center py-4">No playlists found for this genre.</p>
+                    )}
+                    {categoryPlaylists.map(pl => <PlaylistButton key={pl.id} playlist={pl} selected={selectedSource === pl.id} onSelect={() => onSelect(pl.id)} />)}
+                  </>
+                ) : (
+                  <>
+                    {featuredPlaylists.length > 0 && (
+                      <div className="space-y-2 mb-3">
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Featured</p>
+                        {featuredPlaylists.map(pl => <PlaylistButton key={pl.id} playlist={pl} selected={selectedSource === pl.id} onSelect={() => onSelect(pl.id)} />)}
+                      </div>
+                    )}
+                    {categories.length > 0 ? (
+                      <>
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Browse by genre</p>
+                        <div className="grid grid-cols-2 gap-2">
+                          {categories.map(cat => (
+                            <button
+                              key={cat.id}
+                              onClick={() => onSelectCategory(cat)}
+                              className="relative h-16 rounded-xl overflow-hidden border border-border bg-card hover:border-primary/50 transition-all text-left"
+                            >
+                              {cat.icons?.[0]?.url && (
+                                <img src={cat.icons[0].url} alt={cat.name} className="absolute inset-0 w-full h-full object-cover opacity-40" />
+                              )}
+                              <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent p-2 flex items-end">
+                                <span className="font-semibold text-xs text-white drop-shadow">{cat.name}</span>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-center py-8 space-y-2">
+                        <p className="text-sm text-muted-foreground">Couldn't load genres right now.</p>
+                        <p className="text-xs text-muted-foreground/60">Try switching to "My Music" or check your Spotify connection.</p>
+                      </div>
+                    )}
+                  </>
+                )}
               </>
             )}
-          </>
-        )}
-      </div>
+          </div>
+        </div>
 
-      <div className="p-5 border-t border-border">
-        <Button data-testid="button-start-game" className="w-full h-12 text-base font-semibold" onClick={onStart} disabled={loadingTracks}>
-          {loadingTracks ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Loading tracks…</> : `Start Game (${ROUNDS_PER_GAME} rounds)`}
-        </Button>
+        {/* Column 3 — Start game summary */}
+        <div className="flex flex-col p-5">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Ready to play?</p>
+
+          <div className="space-y-3 flex-1">
+            <div className="bg-card border border-border rounded-xl p-4 space-y-2 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Mode</span>
+                <span className="font-medium text-foreground">{GUESS_MODE_LABELS[guessMode]}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Rounds</span>
+                <span className="font-medium text-foreground">{ROUNDS_PER_GAME}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Chances/song</span>
+                <span className="font-medium text-foreground">{MAX_GUESSES}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">First clip</span>
+                <span className="font-medium text-foreground">{INITIAL_CLIP_MS / 1000}s</span>
+              </div>
+            </div>
+
+            <div className="bg-card border border-border rounded-xl p-4 text-sm space-y-1">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Scoring</p>
+              {GUESS_POINTS.slice(0, MAX_GUESSES).map((pts, i) => (
+                <div key={i} className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">Guess {i + 1} ({(INITIAL_CLIP_MS + i * EXTRA_CLIP_MS) / 1000}s clip)</span>
+                  <span className="font-semibold text-primary">{pts} pts</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 text-sm text-muted-foreground space-y-1">
+              <p className="font-medium text-foreground text-xs mb-1">Tips</p>
+              <p className="text-xs">• You get {MAX_GUESSES} guesses per song</p>
+              <p className="text-xs">• Each wrong guess plays 5 more seconds</p>
+              <p className="text-xs">• Use hints for first-letter clues</p>
+              <p className="text-xs">• Close spellings count — no need to be exact</p>
+              {guessMode === "both" && <p className="text-xs">• "Both" mode gives partial credit for one correct</p>}
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <Button data-testid="button-start-game" className="w-full h-12 text-base font-semibold" onClick={onStart} disabled={loadingTracks}>
+              {loadingTracks ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Loading tracks…</> : `Start Game`}
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
 function PlayingScreen({
-  game, track, isPlaying, clipTimer, clipStepIndex, guess, onGuessChange,
-  onSubmit, onPlayClip, onMoreTime, onNext, result, revealed,
+  game, track, isPlaying, clipTimer, clipDurationMs, guessAttempt,
+  guess, onGuessChange, onSubmit, onPlayClip, onMoreTime, onNext, onGiveUp,
+  result, revealed, wrongGuesses, hint, onShowHint, pointsEarned,
   voiceState, onToggleVoice, sdkReady, playerError, guessMode, onLogout,
 }: {
   game: GameState; track: SpotifyTrack; isPlaying: boolean; clipTimer: number;
-  clipStepIndex: number; guess: string; onGuessChange: (v: string) => void;
+  clipDurationMs: number; guessAttempt: number;
+  guess: string; onGuessChange: (v: string) => void;
   onSubmit: () => void; onPlayClip: () => void; onMoreTime: () => void;
-  onNext: () => void; result: "correct" | "wrong" | null; revealed: boolean;
+  onNext: () => void; onGiveUp: () => void;
+  result: GuessResult; revealed: boolean;
+  wrongGuesses: string[]; hint: string | null; onShowHint: () => void;
+  pointsEarned: number;
   voiceState: string; onToggleVoice: () => void; sdkReady: boolean;
   playerError: string | null; guessMode: GuessMode; onLogout: () => void;
 }) {
   const roundNum = game.currentIndex + 1;
-  const currentStepMs = CLIP_STEPS[clipStepIndex];
-  const progress = (clipTimer / (currentStepMs / 1000)) * 100;
-  const hasMoreTime = clipStepIndex < CLIP_STEPS.length - 1;
-  const pointsAvailable = STEP_POINTS[clipStepIndex];
+  const progress = clipDurationMs > 0 ? (clipTimer / (clipDurationMs / 1000)) * 100 : 0;
+  const attemptsLeft = MAX_GUESSES - guessAttempt;
+  const albumArt = getAlbumArt(track);
+
+  // Determine feedback message
+  const feedbackMsg = (() => {
+    if (result === "correct") return `That's it! +${pointsEarned} pts 🎉`;
+    if (result === "partial") return `Close! You got part of it — +${pointsEarned} pts`;
+    if (result === "wrong" && revealed) return `The answer was coming up… better luck next time!`;
+    return null;
+  })();
+
+  const feedbackColor = result === "correct"
+    ? "bg-green-500/10 border-green-500/30 text-green-400"
+    : result === "partial"
+    ? "bg-amber-500/10 border-amber-500/30 text-amber-400"
+    : "bg-muted/50 border-border text-muted-foreground";
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
+      {/* Header */}
       <header className="flex items-center justify-between px-5 py-3 border-b border-border">
         <div className="flex items-center gap-3">
           <Badge variant="outline" className="font-mono text-xs">{roundNum}/{game.totalRounds}</Badge>
@@ -767,7 +984,7 @@ function PlayingScreen({
               <Zap className="w-3 h-3 mr-1" />{game.streak}x
             </Badge>
           )}
-          <Badge variant="outline" className="text-xs text-muted-foreground">{GUESS_MODE_LABELS[guessMode]}</Badge>
+          <Badge variant="outline" className="text-xs text-muted-foreground hidden sm:flex">{GUESS_MODE_LABELS[guessMode]}</Badge>
         </div>
         <div className="flex items-center gap-3">
           <span className="font-mono font-bold flex items-center gap-1"><Trophy className="w-4 h-4 text-primary" />{game.score}</span>
@@ -775,73 +992,144 @@ function PlayingScreen({
         </div>
       </header>
 
-      <div className="flex-1 flex flex-col items-center justify-between p-6 max-w-md mx-auto w-full">
-        {/* Album art */}
-        <div className="w-full space-y-4">
-          <div className={`w-48 h-48 mx-auto rounded-2xl shadow-2xl overflow-hidden transition-all duration-500 ${revealed ? "scale-100 opacity-100 blur-0" : "scale-90 opacity-25 blur-sm"}`}>
-            {getAlbumArt(track) ? (
-              <img src={getAlbumArt(track)} alt="Album" className="w-full h-full object-cover" />
-            ) : (
-              <div className="w-full h-full bg-card flex items-center justify-center"><Music className="w-16 h-16 text-muted-foreground" /></div>
-            )}
+      {/* 3-column game layout */}
+      <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-0 divide-y md:divide-y-0 md:divide-x divide-border overflow-hidden">
+
+        {/* Column 1 — Guessing matrix (attempts) */}
+        <div className="flex flex-col p-5 space-y-3">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Your guesses</p>
+
+          {/* Attempt bubbles */}
+          <div className="space-y-2 flex-1">
+            {Array.from({ length: MAX_GUESSES }).map((_, i) => {
+              const pastGuess = wrongGuesses[i];
+              const isCurrent = i === guessAttempt && result === null;
+              const isEmpty = i > guessAttempt || (i === guessAttempt && result === null && !pastGuess);
+              return (
+                <div
+                  key={i}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm transition-all ${
+                    pastGuess
+                      ? "bg-red-500/5 border-red-500/20 text-muted-foreground"
+                      : isCurrent
+                      ? "bg-primary/5 border-primary/30 text-foreground"
+                      : "bg-muted/20 border-border/30 text-muted-foreground/40"
+                  }`}
+                >
+                  <span className="text-xs font-mono w-4 shrink-0 text-muted-foreground">{i + 1}</span>
+                  {pastGuess ? (
+                    <>
+                      <XCircle className="w-3 h-3 shrink-0 text-red-400" />
+                      <span className="truncate italic">{pastGuess}</span>
+                    </>
+                  ) : isCurrent ? (
+                    <span className="text-xs text-primary animate-pulse">← your turn</span>
+                  ) : (
+                    <span className="text-xs opacity-40">—</span>
+                  )}
+                </div>
+              );
+            })}
           </div>
-          {revealed && (
-            <div className="text-center space-y-1 animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <p className="font-bold text-xl">{track.name}</p>
-              <p className="text-muted-foreground">{track.artists.map(a => a.name).join(", ")}</p>
-              <p className="text-xs text-muted-foreground/60">{track.album.name}</p>
+
+          {/* Hint display */}
+          {hint && (
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 text-xs text-amber-400 font-mono">
+              {hint}
+            </div>
+          )}
+
+          {/* Result feedback */}
+          {result !== null && feedbackMsg && (
+            <div className={`flex items-center gap-2 p-3 rounded-xl border text-sm animate-in fade-in duration-300 ${feedbackColor}`}>
+              {result === "correct" && <CheckCircle className="w-4 h-4 shrink-0" />}
+              {result === "partial" && <Star className="w-4 h-4 shrink-0" />}
+              {result === "wrong" && <span className="text-lg">😅</span>}
+              <p className="font-medium">{feedbackMsg}</p>
             </div>
           )}
         </div>
 
-        <div className="w-full space-y-3">
-          {/* Clip steps indicator */}
-          <div className="flex gap-1 justify-center">
-            {CLIP_STEPS.map((s, i) => (
-              <div key={i} className={`h-1 flex-1 rounded-full transition-all ${i < clipStepIndex ? "bg-primary" : i === clipStepIndex ? "bg-primary/50" : "bg-muted"}`} />
-            ))}
+        {/* Column 2 — Album art + playback */}
+        <div className="flex flex-col items-center justify-between p-5 space-y-4">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider self-start">Now playing</p>
+
+          {/* Album art — hidden while playing, revealed when round done */}
+          <div className={`transition-all duration-700 ${revealed ? "opacity-100 scale-100" : "opacity-0 scale-75 pointer-events-none"}`}>
+            <div className="w-48 h-48 mx-auto rounded-2xl shadow-2xl overflow-hidden">
+              {albumArt ? (
+                <img src={albumArt} alt="Album" className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full bg-card flex items-center justify-center"><Music className="w-16 h-16 text-muted-foreground" /></div>
+              )}
+            </div>
+            <div className="text-center space-y-1 mt-3 animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <p className="font-bold text-xl">{track.name}</p>
+              <p className="text-muted-foreground">{track.artists.map(a => a.name).join(", ")}</p>
+              <p className="text-xs text-muted-foreground/60">{track.album.name}</p>
+            </div>
           </div>
 
-          {/* Timer bar */}
+          {/* Placeholder when not yet revealed */}
+          {!revealed && (
+            <div className="w-48 h-48 mx-auto rounded-2xl bg-card border border-border flex items-center justify-center">
+              <Music className="w-16 h-16 text-muted-foreground/30" />
+            </div>
+          )}
+
+          {/* Clip timer */}
           {isPlaying && (
-            <div className="space-y-1">
+            <div className="w-full space-y-1">
               <div className="h-1.5 bg-muted rounded-full overflow-hidden">
                 <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${progress}%` }} />
               </div>
               <div className="flex justify-between text-xs text-muted-foreground font-mono">
-                <span>Playing…</span><span>{clipTimer.toFixed(1)}s</span>
+                <span className="flex items-center gap-1"><Volume2 className="w-3 h-3 animate-pulse" /> Playing…</span>
+                <span>{clipTimer.toFixed(1)}s</span>
               </div>
             </div>
           )}
 
+          {/* Play button */}
+          {result === null && (
+            <Button
+              data-testid="button-play-clip"
+              onClick={onPlayClip}
+              disabled={!sdkReady || isPlaying || !!playerError}
+              className="w-full h-14 text-base font-semibold"
+            >
+              {isPlaying
+                ? <><Volume2 className="w-5 h-5 mr-2 animate-pulse" />Playing…</>
+                : <><Play className="w-5 h-5 mr-2" />Play {clipDurationMs / 1000}s clip</>}
+            </Button>
+          )}
+
+          {/* Next button */}
+          {result !== null && (
+            <Button data-testid="button-next" onClick={onNext} className="w-full h-12 text-base">
+              {game.currentIndex + 1 >= game.totalRounds ? "See Results" : <>Next Song <SkipForward className="w-4 h-4 ml-1" /></>}
+            </Button>
+          )}
+
+          {playerError && <p className="text-xs text-destructive text-center">{playerError}</p>}
+        </div>
+
+        {/* Column 3 — Text input + controls */}
+        <div className="flex flex-col p-5 space-y-4">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+            {result === null ? `Guess ${guessAttempt + 1} of ${MAX_GUESSES}` : "Round complete"}
+          </p>
+
           {result === null ? (
             <>
-              {/* Play button */}
-              <Button
-                data-testid="button-play-clip"
-                onClick={onPlayClip}
-                disabled={!sdkReady || isPlaying || !!playerError}
-                className="w-full h-14 text-lg font-semibold"
-              >
-                {isPlaying ? <><Volume2 className="w-5 h-5 mr-2 animate-pulse" />Playing…</> : <><Play className="w-5 h-5 mr-2" />Play {CLIP_STEPS[clipStepIndex] / 1000}s Clip — {pointsAvailable} pts</>}
-              </Button>
+              {/* Attempts left indicator */}
+              <div className="flex gap-1">
+                {Array.from({ length: MAX_GUESSES }).map((_, i) => (
+                  <div key={i} className={`h-1.5 flex-1 rounded-full transition-all ${i < guessAttempt ? "bg-red-400/60" : i === guessAttempt ? "bg-primary" : "bg-muted"}`} />
+                ))}
+              </div>
 
-              {/* More time button */}
-              {clipStepIndex > 0 && hasMoreTime && !isPlaying && (
-                <Button variant="outline" className="w-full" onClick={onMoreTime} disabled={isPlaying}>
-                  <Clock className="w-4 h-4 mr-2" />Another 3 seconds ({CLIP_STEPS[clipStepIndex + 1] / 1000}s total — {STEP_POINTS[clipStepIndex + 1]} pts)
-                </Button>
-              )}
-              {clipStepIndex === 0 && !isPlaying && (
-                <p className="text-xs text-center text-muted-foreground">After playing, you can request more time</p>
-              )}
-              {clipStepIndex > 0 && !isPlaying && !hasMoreTime && (
-                <p className="text-xs text-center text-muted-foreground">Maximum clip reached</p>
-              )}
-
-              {playerError && <p className="text-xs text-destructive text-center">{playerError}</p>}
-
-              {/* Guess input */}
+              {/* Input */}
               <div className="space-y-2">
                 <div className="flex gap-2">
                   <Input
@@ -851,34 +1139,90 @@ function PlayingScreen({
                     onChange={e => onGuessChange(e.target.value)}
                     onKeyDown={e => e.key === "Enter" && guess.trim() && onSubmit()}
                     className="flex-1 h-12 text-base"
+                    autoFocus
                   />
                   <Button
                     data-testid="button-voice"
                     variant={voiceState === "listening" ? "destructive" : "outline"}
                     size="icon" className="h-12 w-12 shrink-0"
                     onClick={onToggleVoice}
+                    title="Voice input"
                   >
                     {voiceState === "listening" ? <MicOff className="w-5 h-5 animate-pulse" /> : <Mic className="w-5 h-5" />}
                   </Button>
                 </div>
                 {voiceState === "listening" && <p className="text-xs text-primary text-center animate-pulse">Listening… say your answer</p>}
-                <Button data-testid="button-submit" onClick={onSubmit} disabled={!guess.trim()} className="w-full" variant="secondary">
+
+                <Button data-testid="button-submit" onClick={onSubmit} disabled={!guess.trim()} className="w-full h-11">
                   Submit Guess
                 </Button>
               </div>
+
+              {/* Action buttons */}
+              <div className="flex gap-2">
+                {guessAttempt > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1 text-amber-400 border-amber-500/30 hover:bg-amber-500/10"
+                    onClick={onShowHint}
+                  >
+                    <Lightbulb className="w-4 h-4 mr-1" />Hint
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="flex-1 text-muted-foreground hover:text-destructive"
+                  onClick={onGiveUp}
+                >
+                  <Flag className="w-4 h-4 mr-1" />Give Up
+                </Button>
+              </div>
+
+              {/* Mode reminder */}
+              <div className="bg-card border border-border rounded-lg p-3 text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">Mode: </span>{GUESS_MODE_LABELS[guessMode]}
+                {guessMode === "both" && <span className="block mt-1 opacity-70">Tip: type both "Song — Artist" or just the song for partial credit</span>}
+                {guessMode === "either" && <span className="block mt-1 opacity-70">Tip: just the song title or artist name both work</span>}
+              </div>
             </>
           ) : (
-            <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className={`flex items-center gap-3 p-4 rounded-xl border ${result === "correct" ? "bg-green-500/10 border-green-500/30 text-green-400" : "bg-destructive/10 border-destructive/30 text-destructive"}`}>
-                {result === "correct" ? <CheckCircle className="w-5 h-5 shrink-0" /> : <XCircle className="w-5 h-5 shrink-0" />}
-                <div>
-                  <p className="font-semibold">{result === "correct" ? `Correct! +${STEP_POINTS[clipStepIndex]} pts` : "Not quite!"}</p>
-                  {guess && <p className="text-xs opacity-70">You said: "{guess}"</p>}
+            /* Round complete summary */
+            <div className="space-y-3">
+              <div className={`p-4 rounded-xl border ${feedbackColor}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  {result === "correct" && <CheckCircle className="w-5 h-5" />}
+                  {result === "partial" && <Star className="w-5 h-5" />}
+                  {result === "wrong" && <span className="text-xl">😅</span>}
+                  <span className="font-semibold">{feedbackMsg}</span>
+                </div>
+                {result !== "wrong" && (
+                  <p className="text-xs opacity-70">Guessed on attempt {guessAttempt + 1}</p>
+                )}
+              </div>
+
+              <div className="bg-card border border-border rounded-xl p-4 space-y-2 text-sm">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">The answer</p>
+                <p className="font-bold text-foreground">{track.name}</p>
+                <p className="text-muted-foreground">{track.artists.map(a => a.name).join(", ")}</p>
+                <p className="text-xs text-muted-foreground/60">{track.album.name}</p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="bg-card border border-border rounded-lg p-2">
+                  <p className="font-bold text-lg text-foreground">{game.score}</p>
+                  <p className="text-muted-foreground">Score</p>
+                </div>
+                <div className="bg-card border border-border rounded-lg p-2">
+                  <p className="font-bold text-lg text-foreground">{game.streak}</p>
+                  <p className="text-muted-foreground">Streak</p>
+                </div>
+                <div className="bg-card border border-border rounded-lg p-2">
+                  <p className="font-bold text-lg text-foreground">{game.roundsWon}/{game.currentIndex + 1}</p>
+                  <p className="text-muted-foreground">Correct</p>
                 </div>
               </div>
-              <Button data-testid="button-next" onClick={onNext} className="w-full h-12 text-base">
-                {game.currentIndex + 1 >= game.totalRounds ? "See Results" : <>Next Song <SkipForward className="w-4 h-4 ml-1" /></>}
-              </Button>
             </div>
           )}
         </div>
@@ -900,7 +1244,7 @@ function GameOverScreen({ game, user, onPlayAgain, onLogout }: {
           </div>
           <div>
             <h2 className="text-3xl font-bold">{game.score} pts</h2>
-            <p className="text-muted-foreground">Game over, {user.display_name.split(" ")[0]}!</p>
+            <p className="text-muted-foreground">Nice work, {user.display_name.split(" ")[0]}!</p>
           </div>
         </div>
         <div className="grid grid-cols-3 gap-3">
